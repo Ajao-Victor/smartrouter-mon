@@ -15,6 +15,7 @@ export type ApiErrorCode =
   | 'ABORTED'
   | 'INVALID_RESPONSE'
   | 'PAYMENT_CANCELLED'
+  | 'PAYMENT_FAILED'
   | 'SESSION_BUSY'
   | 'UNKNOWN';
 

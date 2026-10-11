@@ -63,7 +63,7 @@ export interface ComparePair {
 }
 
 /** Codes that mean the run never started (nothing streamed, nothing charged). */
-const PRE_STREAM_CODES: ReadonlySet<string> = new Set(['ALLOCATION_EXHAUSTED', 'PAYMENT_REQUIRED', 'QUOTE_EXPIRED', 'QUOTE_USED', 'VALIDATION_FAILED', 'RATE_LIMITED', 'SESSION_BUSY', 'FREE_LIMIT_REACHED', 'PAYMENT_CANCELLED', 'UNAUTHENTICATED', 'FORBIDDEN', 'PROVIDER_UNAVAILABLE', 'NOT_FOUND']);
+const PRE_STREAM_CODES: ReadonlySet<string> = new Set(['ALLOCATION_EXHAUSTED', 'PAYMENT_REQUIRED', 'QUOTE_EXPIRED', 'QUOTE_USED', 'VALIDATION_FAILED', 'RATE_LIMITED', 'SESSION_BUSY', 'FREE_LIMIT_REACHED', 'PAYMENT_CANCELLED', 'PAYMENT_FAILED', 'UNAUTHENTICATED', 'FORBIDDEN', 'PROVIDER_UNAVAILABLE', 'NOT_FOUND']);
 
 function compareGroupId(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `cg_${String(Date.now())}_${Math.random().toString(36).slice(2)}`;
@@ -187,8 +187,12 @@ export function useRun(chatId: string) {
       switch (e.code) {
         case 'ALLOCATION_EXHAUSTED':
         case 'PAYMENT_REQUIRED': {
-          const parsed = freeFallbackSchema.safeParse((e.details as { freeFallback?: unknown } | undefined)?.freeFallback ?? {});
-          setNeedsTopUp({ priceUsd, prompt, freeFallback: parsed.success ? parsed.data : FREE_FALLBACK_DEFAULT, reason: topUpReason(e.details) });
+          // Only the server knows the free allowance. When it didn't say (e.g. mppx refused locally
+          // with "exceeds local maxDeposit"), assume free is available — the free run itself will
+          // answer FREE_LIMIT_REACHED if it isn't.
+          const raw = (e.details as { freeFallback?: unknown } | undefined)?.freeFallback;
+          const parsed = raw ? freeFallbackSchema.safeParse(raw) : null;
+          setNeedsTopUp({ priceUsd, prompt, freeFallback: parsed?.success ? parsed.data : FREE_FALLBACK_DEFAULT, reason: topUpReason(e.details) });
           return 'needs_top_up';
         }
         case 'QUOTE_EXPIRED':
@@ -206,8 +210,13 @@ export function useRun(chatId: string) {
           toast.warn('A payment is already in progress', 'Wait for the current answer to start streaming.');
           return 'busy';
         case 'FREE_LIMIT_REACHED':
-          toast.warn('Free messages reset at 00:00 UTC', 'Pick a paid model to keep going.');
+          // The server's message says which limit (yours, or the free model's daily capacity).
+          toast.warn(e.message || 'Free messages reset at 00:00 UTC', 'Pick a paid model to keep going.');
           return 'free_exhausted';
+        case 'PAYMENT_FAILED':
+          console.error('[SmartRouter] payment failed', e.details);
+          toast.error('Payment failed — you were not charged', e.message);
+          return 'cancelled';
         case 'PAYMENT_CANCELLED':
           toast.info('Payment cancelled', 'Nothing was charged. Your prompt is still in the box.');
           return 'cancelled';
@@ -224,6 +233,7 @@ export function useRun(chatId: string) {
           toast.warn('That chat or quote is gone', 'The list has been refreshed.');
           return 'cancelled';
         default:
+          console.error('[SmartRouter] run failed before streaming', e.code, e.message, e.details);
           toast.error(e.message);
           return 'cancelled';
       }

@@ -182,8 +182,21 @@ async function openRun(body: RunInput, free: boolean, signal: AbortSignal): Prom
     return await paidFetch(RUN_PATH, init);
   } catch (err) {
     if (isApiError(err)) throw err;
-    throw toPaymentError(err) ?? errorFromFetchFailure(err);
+    const mapped = toPaymentError(err);
+    if (mapped) throw mapped;
+    // Only a real fetch failure (offline, CORS) is "could not reach". Anything else thrown on the
+    // paid path (Privy wallet, viem, mppx) keeps its own message so it can be diagnosed.
+    if (free || isFetchFailure(err)) throw errorFromFetchFailure(err);
+    console.error('[SmartRouter] paid run failed in the payment client', err);
+    const message = err instanceof Error && err.message ? err.message : 'The payment could not be completed.';
+    throw new ApiError({ status: 0, code: 'PAYMENT_FAILED', message: `Payment failed: ${message.slice(0, 200)}`, details: err });
   }
+}
+
+/** `fetch` rejects with a TypeError ("Failed to fetch", "Load failed", "NetworkError…") or an AbortError. */
+function isFetchFailure(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return true;
+  return err instanceof TypeError && /fetch|network|load failed/i.test(err.message);
 }
 
 /**

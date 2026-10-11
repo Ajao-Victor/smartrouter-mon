@@ -5,6 +5,7 @@
  * bundle while `session.ts` (mppx) stays lazy.
  */
 import { ApiError } from '@/lib/api/client';
+import { isTestnet } from '@/lib/env';
 
 export function toPaymentError(err: unknown): ApiError | null {
   if (err instanceof ApiError) return err;
@@ -17,6 +18,8 @@ export function toPaymentError(err: unknown): ApiError | null {
   if (/reject|cancel|denied|abort|not allowed|NotAllowedError/i.test(m) || err.name === 'NotAllowedError') {
     return new ApiError({ status: 0, code: 'PAYMENT_CANCELLED', message: 'Payment cancelled — nothing was charged.', details: err });
   }
-  if (/insufficient|balance/i.test(m)) return new ApiError({ status: 402, code: 'PAYMENT_REQUIRED', message: 'Your wallet balance is too low to open the session. Fund it first.', details: err });
+  // Not a deposit/allocation problem: the wallet itself can't fund the deposit. Say so plainly
+  // instead of showing "Allocation used — Top up".
+  if (/insufficient|exceeds balance|balance too low/i.test(m)) return new ApiError({ status: 0, code: 'PAYMENT_FAILED', message: `Your wallet doesn't have enough ${isTestnet ? 'pathUSD' : 'USDC.e'} to open the deposit. Fund your wallet address (Wallet → copy) and try again, or use the free model.`, details: err });
   return null;
 }

@@ -39,8 +39,9 @@ export function toUiAction(err: unknown): UiErrorAction {
       return { kind: 'wrong_wallet' };
     case 'ALLOCATION_EXHAUSTED':
     case 'PAYMENT_REQUIRED': {
-      const parsed = freeFallbackSchema.safeParse(detail(err, 'freeFallback') ?? {});
-      return { kind: 'top_up', freeFallback: parsed.success ? parsed.data : { available: false, remaining: null, modelId: FREE_MODEL_ID, auto: false } };
+      const raw = detail(err, 'freeFallback');
+      const parsed = raw ? freeFallbackSchema.safeParse(raw) : null;
+      return { kind: 'top_up', freeFallback: parsed?.success ? parsed.data : { available: true, remaining: null, modelId: FREE_MODEL_ID, auto: false } };
     }
     case 'QUOTE_EXPIRED':
     case 'VALIDATION_FAILED':
