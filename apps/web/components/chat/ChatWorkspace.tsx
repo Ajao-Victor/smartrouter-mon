@@ -256,8 +256,11 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
     openSignIn();
   };
 
-  // A guest's message kept through sign-in: send it as soon as the chat opens.
+  // A guest's message kept through sign-in: send it as soon as the chat history has loaded
+  // (the optimistic bubbles are written into that query's cache, so it must exist first).
+  const chatLoaded = chat.data !== undefined;
   useEffect(() => {
+    if (!chatLoaded) return;
     const auto = useComposerStore.getState().takeAutoRun(chatId);
     if (!auto) return;
     if (auto.modelId) selectModel(auto.modelId);
@@ -265,9 +268,9 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
       if (q) void runWithQuote(auto.prompt, q);
       else useComposerStore.getState().setDraft(auto.prompt);
     });
-    // Run once per chat.
+    // Run once per chat, once its history is in the cache.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId]);
+  }, [chatId, chatLoaded]);
 
   // The deposit ran out (mppx "exceeds local maxDeposit", or a 402): keep the message, open the
   // deposit dialog, and send the message once the new deposit is set up.
