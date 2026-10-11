@@ -4,7 +4,7 @@ beforeEach(() => {
   useUiStore.setState({
     activeDialog: null,
     walletSheetOpen: false,
-    compareMode: false,
+    walletView: 'main',
     theme: 'dark',
     forceReducedMotion: false,
     sdkDialogOpen: false,
@@ -34,11 +34,11 @@ describe('uiStore', () => {
     useUiStore.getState().setTheme('light');
     useUiStore.getState().setForceReducedMotion(true);
     useUiStore.getState().toggleWallet(true);
-    useUiStore.getState().setCompareMode(true);
+    useUiStore.getState().openWallet('deposit');
     useUiStore.getState().reset();
     const s = useUiStore.getState();
     expect(s.walletSheetOpen).toBe(false);
-    expect(s.compareMode).toBe(false);
+    expect(s.walletView).toBe('main');
     expect(s.theme).toBe('light');
     expect(s.forceReducedMotion).toBe(true);
   });

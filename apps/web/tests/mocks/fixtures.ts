@@ -13,7 +13,7 @@ export const MOCK_ADDRESS = '0x7a3f9c1e5b2d4a6f8e0c1b3d5f7a9c2e4b6d8f01';
 export interface MockUser {
   address: string;
   slider: 'cheapest' | 'balanced' | 'best';
-  allocationUsd: number;
+  dailyLimitUsd: number;
   weeklyLimitUsd: number;
   autoFreeFallback: boolean;
 }
@@ -21,7 +21,7 @@ export interface MockUser {
 export const mockUser = (): MockUser => ({
   address: MOCK_ADDRESS,
   slider: 'balanced',
-  allocationUsd: 2,
+  dailyLimitUsd: 2,
   weeklyLimitUsd: 10,
   autoFreeFallback: true,
 });

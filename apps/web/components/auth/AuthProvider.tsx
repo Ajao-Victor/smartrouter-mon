@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
-import { getIdentityToken, PrivyProvider, useIdentityToken, useLogin, useLogout, usePrivy, useUser, useWallets, type PrivyClientConfig } from '@privy-io/react-auth';
+import { getIdentityToken, PrivyProvider, useFundWallet, useIdentityToken, useLogin, useLogout, usePrivy, useUser, useWallets, type PrivyClientConfig } from '@privy-io/react-auth';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { base } from 'viem/chains';
 
 import { isApiError } from '@/lib/api/client';
 import { apiUnreachableHint } from '@/lib/api/errors';
@@ -56,6 +57,9 @@ function PrivyBridge() {
   const { refreshUser } = useUser();
   const { wallets } = useWallets();
   const { logout } = useLogout();
+  // Card deposits (Handover "Deposit → Card"): Privy's checkout, Base USDC to the deposit address.
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
+  const { fundWallet } = useFundWallet();
   useTokenStatus();
 
   const identityRef = useRef(identityToken);
@@ -123,13 +127,16 @@ function PrivyBridge() {
         else login();
       },
       logoutPrivy: () => logout(),
+      fundWallet: async ({ address, amountUsd }) => {
+        await fundWallet({ address, options: { chain: base, asset: 'USDC', amount: amountUsd.toFixed(2) } as never });
+      },
     });
     registerPrivyWallets(() => walletsRef.current);
     return () => {
       registerAuthBridge(null);
       registerPrivyWallets(null);
     };
-  }, [exchange, login, logout]);
+  }, [exchange, login, logout, fundWallet]);
 
   return null;
 }

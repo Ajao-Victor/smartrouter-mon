@@ -14,8 +14,16 @@ import {
   requestListSchema,
   requestSchema,
   privySignInSchema,
+  depositAddressSchema,
+  sendPlanSchema,
+  sendQuoteSchema,
   sessionsCurrentSchema,
   settingsSchema,
+  spendingKeySchema,
+  walletActivitySchema,
+  walletOptionsSchema,
+  walletSchema,
+  type SendInput,
   userSchema,
   type PrivySignInInput,
   type ChatPatch,
@@ -114,5 +122,28 @@ export const waitlist = {
 /** `POST /run` lives in `lib/api/sse.ts` (SSE reader over fetch / the mppx session manager). */
 export const RUN_PATH = '/run';
 
-export const api = { auth, me, catalog, chats, sessions, requests, feedback, waitlist };
+/** Wallet (Handover "Wallet"): one balance, spending caps, Deposit, Send, activity. All need sign-in. */
+export const wallet = {
+  /** `GET /wallet` — balance, locked, caps, spending key, features. */
+  get: (signal?: AbortSignal) => apiFetch('/wallet', { schema: walletSchema, ...sig(signal) }),
+  /** `GET /wallet/options` → `deposit[]`, `send[]`, `card`. */
+  options: (signal?: AbortSignal) => apiFetch('/wallet/options', { schema: walletOptionsSchema, ...sig(signal) }),
+  /** `POST /wallet/deposit-address { chain, token?, refundAddress? }`. */
+  depositAddress: (input: { chain: string; token?: string; refundAddress?: string }) => apiFetch('/wallet/deposit-address', { method: 'POST', body: input, schema: depositAddressSchema }),
+  /** `POST /wallet/send/quote { chain, token, to, amountUsd }`. */
+  sendQuote: (input: SendInput) => apiFetch('/wallet/send/quote', { method: 'POST', body: input, schema: sendQuoteSchema }),
+  /** `POST /wallet/send` → `{ sendId, calls, feePayer: true }`. */
+  send: (input: SendInput) => apiFetch('/wallet/send', { method: 'POST', body: input, schema: sendPlanSchema }),
+  /** `POST /wallet/send/:id/submitted { txHash }`. */
+  submitted: (sendId: string, txHash: string) => apiFetch<{ status: string }>(`/wallet/send/${encodeURIComponent(sendId)}/submitted`, { method: 'POST', body: { txHash } }),
+  /** `GET /wallet/activity?limit=30&before=<at>`. */
+  activity: (before?: string | null, signal?: AbortSignal) =>
+    apiFetch(`/wallet/activity?limit=30${before ? `&before=${encodeURIComponent(before)}` : ''}`, { schema: walletActivitySchema, ...sig(signal) }),
+  /** `POST /wallet/spending-key { accessKeyAddress }` → its on-chain state. */
+  spendingKey: (accessKeyAddress: string) => apiFetch('/wallet/spending-key', { method: 'POST', body: { accessKeyAddress }, schema: spendingKeySchema }),
+  /** `POST /wallet/locked/return` → `{ returnedUsd }` (instant return of locked money). */
+  returnLocked: () => apiFetch<{ returnedUsd: number; skipped?: string[] }>('/wallet/locked/return', { method: 'POST', body: {} }),
+};
+
+export const api = { auth, me, catalog, chats, sessions, requests, feedback, waitlist, wallet };
 export type Api = typeof api;

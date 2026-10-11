@@ -6,11 +6,11 @@ import { micro } from '@/lib/money';
 
 import HomePage from '@/app/page';
 
-import { TopUpBar } from '@/components/allocation/TopUpBar';
+import { PaidBlockBar } from '@/components/allocation/PaidBlockBar';
 import { Composer } from '@/components/chat/Composer';
 import { ModelOptions } from '@/components/chat/ModelOptions';
 import { ReducedMotionProvider } from '@/components/layout/ReducedMotionProvider';
-import { AllocationControls } from '@/components/wallet/AllocationControls';
+import { CapsEditor } from '@/components/wallet/CapsEditor';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn() }), useSearchParams: () => new URLSearchParams(), usePathname: () => '/' }));
 vi.mock('@/lib/api/endpoints', () => ({ api: { catalog: { list: vi.fn().mockResolvedValue([]) }, auth: { challenge: vi.fn(), verify: vi.fn(), logout: vi.fn() } } }));
@@ -49,8 +49,8 @@ describe('accessibility (axe, serious/critical only)', () => {
           onPick={vi.fn()}
         />
         <Composer quote={{ priceUsd: micro(900), free: false }} currentModel={{ label: 'GLM 5.3 Flash', isFree: false }} onSend={vi.fn()} />
-        <TopUpBar topUpUsd={micro(2_000_000)} onTopUp={vi.fn()} onContinueFree={vi.fn()} />
-        <AllocationControls allocationUsd={micro(2_000_000)} weeklyLimitUsd={micro(10_000_000)} autoFreeFallback onChange={vi.fn()} />
+        <PaidBlockBar meter="daily" message="You've reached today's spending cap" freeAvailable onRaiseCap={vi.fn()} onAddFunds={vi.fn()} onContinueFree={vi.fn()} />
+        <CapsEditor dailyLimitUsd={micro(2_000_000)} weeklyLimitUsd={micro(10_000_000)} autoFreeFallback onSave={vi.fn()} />
       </main>,
     );
     expect(await serious(container)).toEqual([]);

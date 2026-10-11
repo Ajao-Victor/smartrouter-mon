@@ -1,133 +1,130 @@
 /**
- * Paying for runs (Handover "Paying for runs"). One `sessionManager` per signed-in user, built on
- * a viem wallet client over the Privy embedded wallet, with `maxDeposit` = the deposit the user
- * chose (default `suggestedDepositUsd`). The first paid run opens the deposit on-chain (the one
- * approval); later runs sign a voucher with no prompt.
+ * Paying for runs (Handover "Paying for runs → Paid answers").
  *
- * - One paid run at a time: `paidFetch` queues calls (`paidRun`) so a second Send waits instead
- *   of failing; the lock lifts as soon as the answer starts streaming.
- * - When the deposit runs out: `manager.close()` (treasury receives what was spent, the rest
- *   returns), then a new manager with the new `maxDeposit`. `manager.topUp` is not used in v1:
- *   `maxDeposit` is a fixed local cap, so vouchers would still stop at the old cap.
+ * 1. A viem client with the spending key as its account — no Privy involvement per message.
+ * 2. A `sessionManager` with the key and `maxDeposit` = `suggestedDepositUsd` from
+ *    `GET /sessions/current` ($1, or less if that's all that's left of today's or this week's cap).
+ * 3. Paid runs go through `manager.fetch`. The first one locks that amount in Tempo's payment
+ *    contract; each answer after that signs a voucher silently.
+ * 4. When the locked amount runs out (`exceeds local maxDeposit`, or `/run` answers
+ *    402 ALLOCATION_EXHAUSTED): ask `/sessions/current` again and create a new manager with the new
+ *    `suggestedDepositUsd`. Don't close the old one — the backend returns its leftover.
+ * 5. `suggestedDepositUsd` of 0 means a cap is reached: show the cap banner instead of paying.
+ *
+ * One paid run at a time: calls are queued (`paidRun`) so a second Send waits instead of failing;
+ * the lock lifts as soon as the answer starts streaming.
  */
-import { createJsonChannelStore, sessionManager } from 'mppx/client';
-import { createWalletClient, custom, type EIP1193Provider } from 'viem';
+import { sessionManager } from 'mppx/client';
+import { createClient, http } from 'viem';
 
 import { ApiError, apiRequest } from '@/lib/api/client';
+import { api } from '@/lib/api/endpoints';
 import { env } from '@/lib/env';
-import { idb } from '@/lib/idb';
-import { toUsdString, type MicroUsd } from '@/lib/money';
+import { toUsdString } from '@/lib/money';
 
 import { chainFor } from './chain';
-import { getPrivyWallet } from './privyWallet';
+import { keyAccount, loadKeyPair } from './spendingKey';
 
 export type SessionManager = ReturnType<typeof sessionManager>;
 
-/** Reusable channels survive reloads, namespaced per wallet so two accounts never share one. */
-function channelStoreFor(address: string) {
-  const prefix = `sr:channel:${address.toLowerCase()}:`;
-  return createJsonChannelStore({
-    get: (key) => idb.get<string>(`${prefix}${key}`),
-    set: (key, value) => idb.set(`${prefix}${key}`, value),
-    delete: (key) => idb.del(`${prefix}${key}`),
-  });
-}
-
 /** Handover: `fetch: (url, init) => api(String(url).replace(API_URL, ''), init)` — adds X-Session-Token. */
 const managerFetch: typeof fetch = (input, init) => {
-  if (input instanceof Request) {
-    const path = input.url.replace(env.apiUrl, '');
-    return apiRequest(path, { method: input.method, headers: input.headers, body: input.body, signal: input.signal, ...init });
-  }
+  if (input instanceof Request) return apiRequest(input.url.replace(env.apiUrl, ''), { method: input.method, headers: input.headers, ...init });
   return apiRequest(String(input).replace(env.apiUrl, ''), init);
 };
 
-interface Configured {
+interface Current {
   manager: SessionManager;
   address: string;
-  maxDepositUsd: MicroUsd;
 }
 
-let configured: Configured | null = null;
+let current: Current | null = null;
 let last: Promise<unknown> = Promise.resolve();
 
-/**
- * Create (or reuse) the manager for the signed-in Privy wallet. A different deposit amount only
- * takes effect after `closeSession()` — the open deposit keeps its cap.
- */
-export async function ensureSession(args: { maxDepositUsd: MicroUsd; chainId?: number | null }): Promise<SessionManager | null> {
-  if (env.mock) return null;
-  const wallet = getPrivyWallet();
-  if (!wallet) throw new ApiError({ status: 401, code: 'UNAUTHENTICATED', message: 'Sign in to run paid models.' });
-  if (configured && configured.address.toLowerCase() === wallet.address.toLowerCase()) return configured.manager;
+/** No spending key in this browser (or it isn't active): run the one-time setup first. */
+export class SpendingKeyMissing extends ApiError {
+  constructor() {
+    super({ status: 0, code: 'SPENDING_KEY_MISSING', message: 'Set up your spending key to pay for answers (one signature, no fee).' });
+  }
+}
 
-  const chain = chainFor(args.chainId ?? env.chainId);
-  await wallet.switchChain?.(chain.id);
-  const provider = (await wallet.getEthereumProvider()) as EIP1193Provider;
-  const client = createWalletClient({ account: wallet.address as `0x${string}`, chain, transport: custom(provider) });
+/** `suggestedDepositUsd` is 0: a daily or weekly cap is reached. */
+export class CapReached extends ApiError {
+  constructor(details?: unknown) {
+    super({ status: 403, code: 'SPENDING_CAP_REACHED', message: "You've reached your spending cap. Raise it in settings or use the free model.", details });
+  }
+}
+
+/** A new manager on the spending key, sized to the next automatic deposit. */
+async function newManager(address: string): Promise<SessionManager> {
+  const keyPair = await loadKeyPair(address);
+  if (!keyPair) throw new SpendingKeyMissing();
+  const { suggestedDepositUsd, network, usage } = await api.sessions.current();
+  if (suggestedDepositUsd <= 0) throw new CapReached({ usage });
+  const key = keyAccount(keyPair, address);
+  const chain = chainFor(network?.chainId ?? env.chainId);
+  const keyClient = createClient({ chain, account: key, transport: http(env.rpcUrl) });
+  // mppx bundles its own viem types; the runtime objects are the same. (Without these casts tsc
+  // overflows its stack comparing the two copies of viem's Client type.)
   const manager = sessionManager({
-    account: client.account,
-    client,
-    maxDeposit: toUsdString(args.maxDepositUsd), // e.g. '2' = $2 of USDC.e
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+    account: key as never,
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+    client: keyClient as never,
+    maxDeposit: toUsdString(suggestedDepositUsd), // e.g. '1' = $1 of USDC.e
     fetch: managerFetch,
     allowedChainIds: [chain.id],
-    channelStore: channelStoreFor(wallet.address),
-    bootstrap: true,
   });
-  configured = { manager, address: wallet.address, maxDepositUsd: args.maxDepositUsd };
+  current = { manager, address };
   return manager;
 }
 
-export function getSessionManager(): SessionManager | null {
-  return configured?.manager ?? null;
+async function managerFor(address: string): Promise<SessionManager> {
+  if (current && current.address.toLowerCase() === address.toLowerCase()) return current.manager;
+  return newManager(address);
 }
 
-/** Forget the manager (sign-out, or before opening a new deposit). */
+/** Forget the manager (sign-out, or after the spending key changed). */
 export function resetSession(): void {
-  configured = null;
+  current = null;
   last = Promise.resolve();
 }
 
-/** Whether a paid call can be made right now (manager configured, or mocks). */
-export function isPaymentReady(): boolean {
-  return env.mock || configured !== null;
+const exhausted = (err: unknown) => /exceeds local maxDeposit/i.test(String(err instanceof Error ? err.message : err));
+
+async function isAllocationExhausted(res: Response): Promise<boolean> {
+  if (res.status !== 402) return false;
+  try {
+    const body = (await res.clone().json()) as { code?: string };
+    return body.code === 'ALLOCATION_EXHAUSTED';
+  } catch {
+    return false;
+  }
+}
+
+/** One paid run: on exhaustion, the next automatic deposit (a new manager) and one retry. */
+async function paidOnce(address: string, path: string, init?: RequestInit): Promise<Response> {
+  const url = `${env.apiUrl}${path}`;
+  let manager = await managerFor(address);
+  try {
+    const res = await manager.fetch(url, init);
+    if (!(await isAllocationExhausted(res))) return res;
+  } catch (err) {
+    if (!exhausted(err)) throw err;
+  }
+  manager = await newManager(address); // next automatic deposit
+  return manager.fetch(url, init);
 }
 
 /**
- * `paidRun`: queue paid calls per manager; the next run waits for this one's payment step only,
- * not for its whole stream. On mocks the request is a plain `apiRequest` (MSW answers).
+ * `paidRun`: queue paid calls; the next run waits for this one's payment step only, not for its
+ * whole stream. On mocks the request is a plain `apiRequest` (MSW answers).
  */
-export function paidFetch(path: string, init?: RequestInit): Promise<Response> {
+export function paidFetch(path: string, init: RequestInit | undefined, address: string): Promise<Response> {
   if (env.mock) return apiRequest(path, init);
-  const manager = configured?.manager;
-  if (!manager) return Promise.reject(new ApiError({ status: 0, code: 'PAYMENT_REQUIRED', message: 'Sign in to run paid models.' }));
-  const res = last.then(() => manager.fetch(`${env.apiUrl}${path}`, init));
+  const res = last.then(() => paidOnce(address, path, init));
   last = res.catch(() => undefined);
   return res;
-}
-
-/** Mock-only route (MSW) standing in for the on-chain close the manager performs. */
-async function mockClose(): Promise<void> {
-  const res = await apiRequest('/mock/session/close', { method: 'POST', body: '{}' });
-  if (!res.ok) throw new ApiError({ status: res.status, code: 'PAYMENT_REQUIRED', message: 'Mock session call failed' });
-}
-
-/**
- * Close the open deposit: settles on-chain — the treasury receives what was spent and the rest
- * returns to the user. The manager is dropped so the next paid run opens a fresh deposit.
- */
-export async function closeSession(args?: { maxDepositUsd: MicroUsd; chainId?: number | null }): Promise<void> {
-  if (env.mock) {
-    await mockClose();
-    return;
-  }
-  // After a reload there may be no manager yet; build one so it can recover and close the channel.
-  const manager = configured?.manager ?? (args ? await ensureSession(args) : null);
-  try {
-    if (manager) await manager.close();
-  } finally {
-    resetSession();
-  }
 }
 
 export { toPaymentError } from './paymentErrors';

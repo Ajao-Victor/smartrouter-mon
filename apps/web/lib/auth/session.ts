@@ -94,6 +94,8 @@ export interface AuthBridge {
   openSignIn: () => void;
   /** Privy's `logout()`. */
   logoutPrivy: () => Promise<void>;
+  /** Privy's card purchase (`useFundWallet`), sent to a deposit address. Absent on mocks. */
+  fundWallet?: (args: { address: string; amountUsd: number }) => Promise<void>;
 }
 
 let bridge: AuthBridge | null = null;
@@ -110,4 +112,10 @@ export function openSignIn(): void {
 
 export async function logoutPrivy(): Promise<void> {
   await bridge?.logoutPrivy();
+}
+
+/** Card deposit: open Privy's checkout with the Base deposit address as the destination. */
+export async function fundWithCard(args: { address: string; amountUsd: number }): Promise<void> {
+  if (!bridge?.fundWallet) throw new Error('Card purchases are not available here.');
+  await bridge.fundWallet(args);
 }

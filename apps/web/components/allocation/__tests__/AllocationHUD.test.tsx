@@ -1,45 +1,20 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 
-import type { SessionsCurrent } from '@/lib/api/types';
-import { micro } from '@/lib/money';
+import { usageSchema } from '@/lib/api/types';
 
-import { useAllocationStore } from '@/stores/allocationStore';
-import { useUiStore } from '@/stores/uiStore';
 import { useUsageStore } from '@/stores/usageStore';
 
-import { AllocationHUD } from '../AllocationHUD';
+import { PaidBlockBar } from '../PaidBlockBar';
 import { UsageBanner } from '../UsageBanner';
 
-const current = (remainingUsd: number): SessionsCurrent => ({
-  suggestedDepositUsd: micro(2_000_000),
-  paidRunsEnabled: true, usage: null, network: { name: null, chainId: 42431, token: null, recipient: null, operator: null },
-  session: { depositUsd: micro(2_000_000), spentUsd: micro(2_000_000 - remainingUsd), remainingUsd: micro(remainingUsd), requests: 1, channelId: 'ch', status: 'open', openedAt: null },
-});
-
-beforeEach(() => {
-  useAllocationStore.getState().reset();
-  useUiStore.setState({ walletSheetOpen: false });
-});
-
-describe('AllocationHUD', () => {
-  it('says Wallet before the first paid run and opens the wallet sheet', () => {
-    render(<AllocationHUD />);
-    fireEvent.click(screen.getByRole('button', { name: 'Wallet' }));
-    expect(useUiStore.getState().walletSheetOpen).toBe(true);
+const usageAt = (level: 'warning' | 'critical' | 'exhausted', meter: 'daily' | 'weekly' | 'balance', usedPct: number, message: string) =>
+  usageSchema.parse({
+    daily: { spentUsd: 1.6, limitUsd: 2, usedPct: 80, remainingUsd: 0.4, resetsAt: '2026-10-12T00:00:00.000Z' },
+    weekly: { spentUsd: 4.1, limitUsd: 10, usedPct: 41, remainingUsd: 5.9 },
+    deposit: null,
+    nextDepositUsd: 0.4,
+    alert: { level, meter, usedPct, message, action: meter === 'balance' ? 'add_funds' : 'raise_limit' },
   });
-
-  it('shows the remaining deposit from /sessions/current', () => {
-    useAllocationStore.getState().hydrate(current(400_000));
-    render(<AllocationHUD />);
-    expect(screen.getByRole('button', { name: 'Allocation: $0.40 remaining of $2.00' })).toHaveTextContent('$0.40');
-  });
-});
-
-const usageAt = (level: 'warning' | 'critical' | 'exhausted', meter: 'weekly' | 'deposit', usedPct: number) => ({
-  weekly: null,
-  deposit: null,
-  alert: { level, meter, usedPct, message: meter === 'weekly' ? `You've used ${String(usedPct)}% of your weekly limit` : `You've used ${String(usedPct)}% of your balance`, action: meter === 'weekly' ? ('raise_limit' as const) : ('top_up' as const) },
-});
 
 describe('UsageBanner (Handover "Usage banners")', () => {
   beforeEach(() => {
@@ -47,37 +22,62 @@ describe('UsageBanner (Handover "Usage banners")', () => {
   });
 
   it('renders nothing below 75% (alert: null)', () => {
-    useUsageStore.getState().setUsage({ weekly: null, deposit: null, alert: null });
-    const { container } = render(<UsageBanner onTopUp={vi.fn()} onRaiseLimit={vi.fn()} />);
+    useUsageStore.getState().setUsage(usageSchema.parse({ alert: null }));
+    const { container } = render(<UsageBanner onRaiseCap={vi.fn()} onAddFunds={vi.fn()} />);
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('warning (75%): "{message} · Get more usage", dismissible, action label button', () => {
-    useUsageStore.getState().setUsage(usageAt('warning', 'weekly', 75));
+  it('warning: "{message} · Resets at … · Raise cap", dismissible', () => {
+    useUsageStore.getState().setUsage(usageAt('warning', 'daily', 80, "You've used 80% of today's spending cap"));
     const onRaise = vi.fn();
-    render(<UsageBanner onTopUp={vi.fn()} onRaiseLimit={onRaise} />);
-    expect(screen.getByRole('status')).toHaveTextContent("You've used 75% of your weekly limit · Get more usage");
-    fireEvent.click(screen.getByRole('button', { name: 'Raise limit' }));
+    render(<UsageBanner onRaiseCap={onRaise} onAddFunds={vi.fn()} />);
+    expect(screen.getByRole('status')).toHaveTextContent("You've used 80% of today's spending cap · Resets at");
+    fireEvent.click(screen.getByRole('button', { name: 'Raise cap' }));
     expect(onRaise).toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(screen.queryByRole('status')).toBeNull();
   });
 
-  it('critical (90%) is not dismissible; top_up opens the deposit dialog', () => {
-    useUsageStore.getState().setUsage(usageAt('critical', 'deposit', 92));
-    const onTopUp = vi.fn();
-    render(<UsageBanner onTopUp={onTopUp} onRaiseLimit={vi.fn()} />);
-    expect(screen.getByRole('alert')).toHaveTextContent("You've used 92% of your balance");
+  it('critical is not dismissible', () => {
+    useUsageStore.getState().setUsage(usageAt('critical', 'weekly', 92, "You've used 92% of this week's spending cap"));
+    render(<UsageBanner onRaiseCap={vi.fn()} onAddFunds={vi.fn()} />);
+    expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Top up' }));
-    expect(onTopUp).toHaveBeenCalled();
   });
 
-  it('exhausted (100%) offers the free model', () => {
-    useUsageStore.getState().setUsage(usageAt('exhausted', 'deposit', 100));
+  it('an empty wallet says "Add funds" (never "Allocation used") and offers the free model', () => {
+    useUsageStore.getState().setUsage(usageAt('exhausted', 'balance', 100, 'Your wallet is empty'));
+    const onFunds = vi.fn();
     const onFree = vi.fn();
-    render(<UsageBanner onTopUp={vi.fn()} onRaiseLimit={vi.fn()} onUseFree={onFree} />);
+    render(<UsageBanner onRaiseCap={vi.fn()} onAddFunds={onFunds} onUseFree={onFree} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Your wallet is empty');
+    fireEvent.click(screen.getByRole('button', { name: 'Add funds' }));
     fireEvent.click(screen.getByRole('button', { name: 'Use the free model' }));
+    expect(onFunds).toHaveBeenCalled();
     expect(onFree).toHaveBeenCalled();
+    expect(document.body).not.toHaveTextContent('Allocation used');
+  });
+
+  it('an unknown meter or action from a newer backend never breaks parsing', () => {
+    const u = usageSchema.parse({ alert: { level: 'warning', meter: 'monthly', usedPct: 76, message: 'x', action: 'something_new' } });
+    expect(u.alert?.meter).toBe('monthly');
+  });
+});
+
+describe('PaidBlockBar', () => {
+  it('cap reached: Raise cap + Continue free', () => {
+    const onRaise = vi.fn();
+    const onFree = vi.fn();
+    render(<PaidBlockBar meter="daily" message="You've reached today's spending cap" freeAvailable onRaiseCap={onRaise} onAddFunds={vi.fn()} onContinueFree={onFree} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Raise cap' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue free' }));
+    expect(onRaise).toHaveBeenCalled();
+    expect(onFree).toHaveBeenCalled();
+  });
+
+  it('empty wallet: Add funds; free is disabled only when the server says so', () => {
+    render(<PaidBlockBar meter="balance" message="" freeAvailable={false} onRaiseCap={vi.fn()} onAddFunds={vi.fn()} onContinueFree={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Add funds' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue free' })).toBeDisabled();
   });
 });

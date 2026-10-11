@@ -3,13 +3,11 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { clsx } from 'clsx';
-import { ArrowUp, GitCompare, Square } from 'lucide-react';
+import { ArrowUp, Square } from 'lucide-react';
 
-import { env } from '@/lib/env';
 import { formatUsd, type MicroUsd } from '@/lib/money';
 
 import { useComposerStore } from '@/stores/composerStore';
-import { useUiStore } from '@/stores/uiStore';
 
 import { ModelPill } from '@/components/chat/ModelPill';
 
@@ -38,7 +36,7 @@ const COOLDOWN_MS = 10_000;
 
 /**
  * The composer: one quiet box at the bottom of the thread. Enter sends, Shift+Enter breaks a
- * line, the model control and the Compare toggle sit under the text, and the quoted price sits
+ * line, the model control sits under the text, and the quoted price sits
  * quietly beside the Send button (never on it).
  */
 export function Composer({
@@ -55,8 +53,6 @@ export function Composer({
 }: ComposerProps) {
   const draft = useComposerStore((s) => s.draft);
   const setDraft = useComposerStore((s) => s.setDraft);
-  const compareMode = useUiStore((s) => s.compareMode);
-  const setCompareMode = useUiStore((s) => s.setCompareMode);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [coolingDown, setCoolingDown] = useState(false);
 
@@ -119,24 +115,6 @@ export function Composer({
 
       <div className="flex items-center gap-1 px-2 pb-2">
         <ModelPill label={currentModel?.label ?? null} isFree={currentModel?.isFree ?? false} disabled={disabled} />
-        {env.flagCompare && (
-          <button
-            type="button"
-            aria-pressed={compareMode}
-            aria-label="Compare two models"
-            disabled={disabled}
-            onClick={() => {
-              setCompareMode(!compareMode);
-            }}
-            className={clsx(
-              'inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors hocus:bg-bg-2 disabled:opacity-50',
-              compareMode ? 'bg-accent-2/15 text-accent-2' : 'text-text-1 hocus:text-text-0',
-            )}
-          >
-            <GitCompare size={14} aria-hidden="true" />
-            Compare
-          </button>
-        )}
         <div className="flex-1" />
         {coolingDown ? (
           <span className="mr-2 text-xs text-warn">Too many requests — one moment</span>

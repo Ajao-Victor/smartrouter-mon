@@ -1,6 +1,8 @@
+import { usageSchema } from '@/lib/api/types';
+
 import { selectPaidBlocked, selectVisibleAlert, useUsageStore } from '@/stores/usageStore';
 
-const alert = (level: 'warning' | 'critical' | 'exhausted', usedPct: number) => ({ weekly: null, deposit: null, alert: { level, meter: 'deposit' as const, usedPct, message: 'm', action: 'top_up' as const } });
+const alert = (level: 'warning' | 'critical' | 'exhausted', usedPct: number) => usageSchema.parse({ alert: { level, meter: 'daily', usedPct, message: 'm', action: 'raise_limit' } });
 
 beforeEach(() => {
   useUsageStore.getState().reset();

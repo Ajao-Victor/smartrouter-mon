@@ -8,6 +8,7 @@ import { addressUrl, shortHex } from '@/lib/explorer';
 import { useAuth } from '@/hooks/useAuth';
 import { useMe } from '@/hooks/useMe';
 import { useSettings } from '@/hooks/useSettings';
+import { useRevokeSpendingKey, useWallet } from '@/hooks/useWallet';
 import { toast } from '@/stores/toastStore';
 import { useUiStore } from '@/stores/uiStore';
 
@@ -15,7 +16,9 @@ import { SignInGate } from '@/components/auth/SignInGate';
 import { PresetSlider } from '@/components/recommend/Slider';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Switch } from '@/components/ui/Switch';
-import { AllocationControls } from '@/components/wallet/AllocationControls';
+import { CapBars } from '@/components/wallet/CapBars';
+import { CapsEditor } from '@/components/wallet/CapsEditor';
+import { SpendingKeyStatus } from '@/components/wallet/SpendingKeyStatus';
 
 export default function SettingsPage() {
   return (
@@ -33,6 +36,8 @@ function Settings() {
   const setTheme = useUiStore((s) => s.setTheme);
   const forceReduced = useUiStore((s) => s.forceReducedMotion);
   const setForceReduced = useUiStore((s) => s.setForceReducedMotion);
+  const wallet = useWallet();
+  const revoke = useRevokeSpendingKey();
 
   if (me.isPending || !me.data) {
     return (
@@ -45,8 +50,11 @@ function Settings() {
   const user = me.data;
   const save = (patch: Parameters<typeof settings.mutate>[0]) => {
     settings.mutate(patch, {
-      onError: () => {
-        toast.error('Could not save settings');
+      onSuccess: () => {
+        toast.success('Saved');
+      },
+      onError: (err) => {
+        toast.error('Could not save settings', err instanceof Error ? err.message : undefined);
       },
     });
   };
@@ -56,13 +64,34 @@ function Settings() {
     <div className="space-y-8">
       <header className="space-y-1">
         <h1 className="font-display text-2xl font-semibold tracking-tight text-text-0">Settings</h1>
-        <p className="text-sm text-text-2">Allocation, defaults and appearance. Saved to your account on change.</p>
+        <p className="text-sm text-text-2">Spending caps, defaults and appearance. Saved to your account.</p>
       </header>
 
-      <section id="limits" className="scroll-mt-20 space-y-2" aria-label="Allocation">
-        <p className="num text-2xs tracking-wider-ui text-text-2 uppercase">Allocation</p>
-        <AllocationControls allocationUsd={user.allocationUsd} weeklyLimitUsd={user.weeklyLimitUsd} autoFreeFallback={user.autoFreeFallback} disabled={settings.isPending} onChange={save} />
+      <section id="limits" className="scroll-mt-20 space-y-3 rounded-lg bg-bg-1 p-4 shadow-hairline" aria-label="Spending caps">
+        <p className="num text-2xs tracking-wider-ui text-text-2 uppercase">Spending caps</p>
+        <CapBars daily={user.usage?.daily ?? null} weekly={user.usage?.weekly ?? null} />
+        <CapsEditor dailyLimitUsd={user.dailyLimitUsd} weeklyLimitUsd={user.weeklyLimitUsd} autoFreeFallback={user.autoFreeFallback} saving={settings.isPending} onSave={save} />
       </section>
+
+      {wallet.data && (
+        <section className="space-y-2 rounded-lg bg-bg-1 p-4 shadow-hairline" aria-label="Spending key">
+          <p className="num text-2xs tracking-wider-ui text-text-2 uppercase">Spending key</p>
+          <SpendingKeyStatus wallet={wallet.data} />
+          {wallet.data.spendingKey?.status === 'active' && (
+            <button
+              type="button"
+              disabled={revoke.isPending}
+              onClick={() => {
+                revoke.mutate(wallet.data);
+              }}
+              className="rounded-lg border border-signal/40 px-3 py-1.5 text-sm text-signal transition-colors hocus:bg-signal/10 disabled:opacity-60"
+            >
+              {revoke.isPending ? 'Revoking…' : 'Revoke spending key'}
+            </button>
+          )}
+          <p className="text-xs text-text-2">The key lives only in this browser and can spend only into Tempo&apos;s payment contract, up to your daily cap. It expires after 7 days.</p>
+        </section>
+      )}
 
       <section className="space-y-2 rounded-lg bg-bg-1 p-4 shadow-hairline" aria-label="Default slider">
         <PresetSlider value={user.slider} onChange={(slider) => { save({ slider }); }} disabled={settings.isPending} />
@@ -112,7 +141,7 @@ function Settings() {
         >
           {auth.signOut.isPending ? 'Signing out…' : 'Sign out'}
         </button>
-        <p className="text-xs text-text-2">Signing out leaves the deposit open; the backend settles it after 10 idle minutes and closes it after 24 hours.</p>
+        <p className="text-xs text-text-2">Money locked for chats returns to your wallet automatically. To stop this browser from paying, revoke the spending key above before you sign out.</p>
       </section>
 
       <footer className="space-y-1 text-xs text-text-2">

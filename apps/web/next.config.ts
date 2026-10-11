@@ -28,7 +28,8 @@ const originOf = (u: string): string => {
 /** Privy's documented CSP origins (auth modal, embedded wallet iframe, RPC proxy, captcha, WalletConnect). */
 const PRIVY = {
   connect: ['https://auth.privy.io', 'https://*.privy.io', 'https://*.rpc.privy.systems', 'wss://relay.walletconnect.com', 'wss://relay.walletconnect.org', 'https://explorer-api.walletconnect.com'],
-  frame: ['https://auth.privy.io', 'https://verify.walletconnect.com', 'https://verify.walletconnect.org', 'https://challenges.cloudflare.com'],
+  // Card deposits open Privy's checkout (MoonPay / Stripe).
+  frame: ['https://auth.privy.io', 'https://verify.walletconnect.com', 'https://verify.walletconnect.org', 'https://challenges.cloudflare.com', 'https://*.moonpay.com', 'https://*.stripe.com'],
   script: ['https://challenges.cloudflare.com'],
 };
 

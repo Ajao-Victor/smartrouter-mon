@@ -9,7 +9,7 @@ import { Composer } from '../Composer';
 
 beforeEach(() => {
   useComposerStore.getState().reset();
-  useUiStore.setState({ activeDialog: null, compareMode: false });
+  useUiStore.setState({ activeDialog: null });
 });
 
 describe('Composer', () => {
@@ -41,11 +41,10 @@ describe('Composer', () => {
     expect(onStop).toHaveBeenCalled();
   });
 
-  it('opens the model picker from the pill and toggles compare', () => {
+  it('opens the model picker from the pill; there is no Compare button', () => {
     render(<Composer quote={null} currentModel={{ label: 'Free · Llama 3.1 8B', isFree: true }} onSend={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: /Model: Free · Llama 3.1 8B/ }));
     expect(useUiStore.getState().activeDialog).toBe('modelPicker');
-    fireEvent.click(screen.getByRole('button', { name: 'Compare two models' }));
-    expect(useUiStore.getState().compareMode).toBe(true);
+    expect(screen.queryByRole('button', { name: /Compare/ })).toBeNull();
   });
 });

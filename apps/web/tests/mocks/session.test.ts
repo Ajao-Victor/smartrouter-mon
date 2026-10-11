@@ -1,7 +1,7 @@
-import { closeSession, paidFetch } from '@/lib/tempo/session';
+import { paidFetch } from '@/lib/tempo/session';
 
 import { server } from './server';
-import { openSession, resetMockState, state } from './state';
+import { resetMockState } from './state';
 
 beforeAll(() => {
   server.listen({ onUnhandledRequest: 'error' });
@@ -15,15 +15,8 @@ afterAll(() => {
 });
 
 describe('mock-mode session calls', () => {
-  it('close goes to the MSW stand-in (no top-up in v1: close, then a new deposit)', async () => {
-    openSession(2);
-    expect(state.session?.depositUsd).toBe(2);
-    await closeSession();
-    expect(state.session).toBeNull();
-  });
-
-  it('paid runs go through the API helper on mocks', async () => {
-    const res = await paidFetch('/sessions/current');
+  it('paid runs go through the API helper on mocks (the spending key signs on live)', async () => {
+    const res = await paidFetch('/sessions/current', undefined, '0xabc');
     expect(res.ok).toBe(true);
   });
 });

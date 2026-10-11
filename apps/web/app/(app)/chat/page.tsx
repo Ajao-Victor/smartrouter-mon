@@ -6,24 +6,13 @@ import { useSearchParams } from 'next/navigation';
 
 import { taskTypeSchema } from '@/lib/api/types';
 
-import { useChats } from '@/hooks/useChats';
-
-import { ChatList } from '@/components/chat/ChatList';
 import { NewChat } from '@/components/chat/NewChat';
 
+/** New chat. The chat history lives in the left sidebar. */
 function NewChatScreen() {
   const params = useSearchParams();
   const parsed = taskTypeSchema.safeParse(params.get('category'));
-  const chats = useChats();
-  return (
-    <div className="space-y-10">
-      <NewChat initialCategory={parsed.success ? parsed.data : null} />
-      <section className="space-y-2">
-        <p className="num px-2 text-2xs tracking-wider-ui text-text-2 uppercase">Recent</p>
-        <ChatList chats={chats.data?.chats} loading={chats.isPending} />
-      </section>
-    </div>
-  );
+  return <NewChat initialCategory={parsed.success ? parsed.data : null} />;
 }
 
 export default function NewChatPage() {

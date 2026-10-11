@@ -25,8 +25,19 @@ export function useMe() {
   });
   const usage = query.data?.usage;
   useEffect(() => {
-    if (usage !== undefined) useUsageStore.getState().setUsage(usage);
+    // `/me` can't see the wallet balance, so its alert never says "Add funds". It only seeds the
+    // banner; `GET /wallet`, `/sessions/current` and the run events (which can) take over.
+    if (usage !== undefined && useUsageStore.getState().usage === null) useUsageStore.getState().setUsage(usage);
   }, [usage]);
+  // After a reload only the token is known; `/me` fills in who is signed in (sidebar, wallet).
+  const data = query.data;
+  useEffect(() => {
+    if (!data) return;
+    const auth = useAuthStore.getState();
+    if (auth.status === 'signed_in' && auth.account?.address !== data.address) {
+      auth.signedIn({ userId: data.id, address: data.address, email: data.email, loginMethod: data.loginMethod });
+    }
+  }, [data]);
   const isUnauthenticated = !signedIn || (isApiError(query.error) && query.error.code === 'UNAUTHENTICATED');
   const isOffline = isApiError(query.error) && query.error.code === 'NETWORK';
   return { ...query, isUnauthenticated, isOffline, signedIn };

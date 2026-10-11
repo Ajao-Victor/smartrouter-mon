@@ -167,7 +167,7 @@ function dispatch(frame: Frame, h: RunHandlers): RunOutcome | null {
   }
 }
 
-async function openRun(body: RunInput, free: boolean, signal: AbortSignal): Promise<Response> {
+async function openRun(body: RunInput, free: boolean, address: string | null, signal: AbortSignal): Promise<Response> {
   const init: RequestInit = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -179,7 +179,7 @@ async function openRun(body: RunInput, free: boolean, signal: AbortSignal): Prom
     if (free) return await apiRequest(RUN_PATH, init);
     // mppx (and viem) load on the first paid run only.
     const { paidFetch } = await import('@/lib/tempo/session');
-    return await paidFetch(RUN_PATH, init);
+    return await paidFetch(RUN_PATH, init, address ?? '');
   } catch (err) {
     if (isApiError(err)) throw err;
     const mapped = toPaymentError(err);
@@ -203,7 +203,7 @@ function isFetchFailure(err: unknown): boolean {
  * Start a run and stream events to `handlers`. Resolves with the outcome. Any event (including
  * heartbeat comments) resets the watchdog; silence for 60 s aborts with `TIMEOUT`.
  */
-export async function runStream(body: RunInput, options: { free: boolean }, handlers: RunHandlers, signal?: AbortSignal): Promise<RunOutcome> {
+export async function runStream(body: RunInput, options: { free: boolean; address?: string | null }, handlers: RunHandlers, signal?: AbortSignal): Promise<RunOutcome> {
   const controller = new AbortController();
   const onOuterAbort = () => {
     controller.abort();
@@ -221,7 +221,7 @@ export async function runStream(body: RunInput, options: { free: boolean }, hand
   };
 
   try {
-    const res = await openRun(body, options.free, controller.signal);
+    const res = await openRun(body, options.free, options.address ?? null, controller.signal);
     if (!res.ok) throw await errorFromResponse(res);
     const reader = res.body?.getReader();
     if (!reader) {
