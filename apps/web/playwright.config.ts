@@ -14,7 +14,8 @@ export default defineConfig({
   testDir: './tests/e2e',
   // Routes are compiled once in global-setup; the budget still leaves room for a slow laptop.
   globalSetup: './tests/e2e/global-setup.ts',
-  timeout: 120_000,
+  // Dev compiles each route on first visit; Privy makes those compiles slow on a laptop.
+  timeout: 300_000,
   retries: process.env.CI ? 1 : 0,
   use: {
     baseURL,
