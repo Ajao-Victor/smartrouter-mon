@@ -3,18 +3,18 @@
 import { apiUnreachableHint } from '@/lib/api/errors';
 
 import { useAuth } from '@/hooks/useAuth';
-import { useCloseSession } from '@/hooks/useCloseSession';
 import { useMe } from '@/hooks/useMe';
 import { useSession } from '@/hooks/useSession';
 import { useSettings } from '@/hooks/useSettings';
+import { useWallet } from '@/hooks/useWallet';
 import { toast } from '@/stores/toastStore';
 import { useUiStore } from '@/stores/uiStore';
 
 import { AllocationHUD } from '@/components/allocation/AllocationHUD';
+import { Sidebar } from '@/components/layout/Sidebar';
 import { TopBar } from '@/components/layout/TopBar';
 import { ReceiptDrawer } from '@/components/receipt/ReceiptDrawer';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { DepositDialog } from '@/components/wallet/DepositDialog';
 import { WalletSheet } from '@/components/wallet/WalletSheet';
 
 export interface AppShellProps {
@@ -23,21 +23,23 @@ export interface AppShellProps {
 }
 
 /**
- * App shell. Signed-out visitors get the normal chat screens (Handover "Guest mode"); the sign-in
- * modal appears only when they send. Signed in: `GET /me` on load (seeds the usage banner),
- * `GET /sessions/current` (payment setup + deposit), wallet sheet, deposit dialog, receipts.
+ * App shell: chat history on the left, the page on the right. Signed-out visitors get the normal
+ * chat screens (Handover "Guest mode"); the sign-in modal appears only when they send. Signed in:
+ * `GET /me` on load (seeds the usage banner), `GET /wallet` and `GET /sessions/current`.
+ *
+ * The page is never unmounted while `/me` refetches: a refetch loop there once left the app stuck
+ * on a skeleton.
  */
 export function AppShell({ children, title }: AppShellProps) {
   const me = useMe();
   const settings = useSettings();
   const auth = useAuth();
-  const closeSession = useCloseSession();
   const pageTitle = useUiStore((s) => s.pageTitle);
-  const openDeposit = useUiStore((s) => s.openDeposit);
-  useSession(auth.isSignedIn && Boolean(me.data));
+  useSession(auth.isSignedIn);
+  useWallet({ enabled: auth.isSignedIn });
 
   const right = auth.isSignedIn ? (
-    me.data ? <AllocationHUD /> : null
+    <AllocationHUD />
   ) : auth.status === 'unknown' ? null : (
     <button
       type="button"
@@ -52,52 +54,50 @@ export function AppShell({ children, title }: AppShellProps) {
   );
 
   return (
-    <div className="flex min-h-dvh flex-col bg-bg-0">
-      <TopBar title={title ?? pageTitle} right={right} />
-      {me.data && (
-        <WalletSheet
-          user={me.data}
-          busy={{ close: closeSession.isPending, settings: settings.isPending, signOut: auth.signOut.isPending }}
-          onTopUp={() => {
-            openDeposit();
-          }}
-          onCloseSession={() => {
-            closeSession.mutate();
-          }}
-          onSettings={(patch) => {
-            settings.mutate(patch, {
-              onError: () => {
-                toast.error('Could not save settings');
-              },
-            });
-          }}
-          onSignOut={() => {
-            auth.signOut.mutate(undefined, {
-              onSettled: () => {
-                window.location.assign('/');
-              },
-            });
-          }}
-        />
-      )}
-      {auth.isSignedIn && <DepositDialog />}
-      <ReceiptDrawer />
-      <main className="mx-auto w-full max-w-3xl flex-1 px-4 pt-6 pb-4">
-        {auth.status === 'unknown' || (auth.isSignedIn && me.isPending) ? (
-          <div className="space-y-3" aria-busy="true">
-            <Skeleton className="h-6 w-40" pill />
-            <Skeleton className="h-28 w-full" />
-            <Skeleton className="h-28 w-full" />
-          </div>
-        ) : me.isOffline ? (
-          <div role="alert" className="space-y-2 rounded-lg bg-bg-1 p-4 text-sm shadow-hairline">
-            <p className="text-signal">Could not reach SmartRouter.</p>
-            <p className="text-text-2">{apiUnreachableHint()}</p>
-          </div>
-        ) : (
-          children
+    <div className="flex min-h-dvh bg-bg-0">
+      <Sidebar />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar title={title ?? pageTitle} right={right} />
+        {me.data && (
+          <WalletSheet
+            user={me.data}
+            busy={{ settings: settings.isPending, signOut: auth.signOut.isPending }}
+            onSettings={(patch) => {
+              settings.mutate(patch, {
+                onSuccess: () => {
+                  toast.success('Saved');
+                },
+                onError: (err) => {
+                  toast.error('Could not save settings', err instanceof Error ? err.message : undefined);
+                },
+              });
+            }}
+            onSignOut={() => {
+              auth.signOut.mutate(undefined, {
+                onSettled: () => {
+                  window.location.assign('/');
+                },
+              });
+            }}
+          />
         )}
-      </main>
+        <ReceiptDrawer />
+        <main className="mx-auto w-full max-w-3xl flex-1 px-4 pt-6 pb-4">
+          {auth.status === 'unknown' ? (
+            <div className="space-y-3" aria-busy="true">
+              <Skeleton className="h-6 w-40" pill />
+              <Skeleton className="h-28 w-full" />
+            </div>
+          ) : me.isOffline && !me.data ? (
+            <div role="alert" className="space-y-2 rounded-lg bg-bg-1 p-4 text-sm shadow-hairline">
+              <p className="text-signal">Could not reach SmartRouter.</p>
+              <p className="text-text-2">{apiUnreachableHint()}</p>
+            </div>
+          ) : (
+            children
+          )}
+        </main>
+      </div>
     </div>
   );
 }

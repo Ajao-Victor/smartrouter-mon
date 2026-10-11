@@ -14,6 +14,13 @@ export const queryKeys = {
   chat: (chatId: string) => ['chat', chatId] as const,
   request: (requestId: string) => ['request', requestId] as const,
   requests: () => ['requests'] as const,
+  wallet: {
+    all: () => ['wallet'] as const,
+    get: () => ['wallet', 'summary'] as const,
+    options: () => ['wallet', 'options'] as const,
+    activity: () => ['wallet', 'activity'] as const,
+    depositAddress: (chain: string, token: string) => ['wallet', 'deposit-address', chain, token] as const,
+  },
 } as const;
 
 /** Quote validity window in ms (PDF: 5 minutes). */

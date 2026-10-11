@@ -13,8 +13,8 @@ describe('payment errors', () => {
 
   it('an empty wallet is a payment failure with a funding hint, not "Allocation used"', () => {
     const e = toPaymentError(new Error('insufficient funds for transfer'));
-    expect(e?.code).toBe('PAYMENT_FAILED');
-    expect(e?.message).toMatch(/Fund your wallet/);
+    expect(e?.code).toBe('INSUFFICIENT_FUNDS');
+    expect(e?.message).toMatch(/Add funds/);
   });
 
   it('keeps the server freeFallback when present', () => {

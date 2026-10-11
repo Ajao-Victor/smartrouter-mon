@@ -3,53 +3,53 @@
 import { clsx } from 'clsx';
 import { X } from 'lucide-react';
 
-import type { UsageAlert } from '@/lib/api/types';
-
 import { selectVisibleAlert, useUsageStore } from '@/stores/usageStore';
 
+import { resetsAtLabel } from '@/components/wallet/CapBars';
+
 export interface UsageBannerProps {
-  /** `top_up` (deposit meter): open the deposit dialog. */
-  onTopUp: () => void;
-  /** `raise_limit` (weekly meter): open settings to raise `weeklyLimitUsd`. */
-  onRaiseLimit: () => void;
+  /** `raise_limit` (daily or weekly cap): open settings to raise the cap. */
+  onRaiseCap: () => void;
+  /** `add_funds` (balance): open the Deposit panel. */
+  onAddFunds: () => void;
   /** `exhausted`: offer the free model. */
   onUseFree?: (() => void) | undefined;
   className?: string;
 }
 
-const ACTION_LABEL: Record<UsageAlert['action'], string> = { top_up: 'Top up', raise_limit: 'Raise limit' };
-
 /**
- * Usage banner (Handover "Usage banners"): the backend computes `usage.alert`; this only renders
- * it, formatted like Claude's — "{message} · Get more usage".
+ * Usage banner (Handover "Usage banners"): the backend computes `usage.alert`; this renders it like
+ * Claude's — "{message} · {button}". The button follows `action`: `raise_limit` → "Raise cap",
+ * `add_funds` → "Add funds". A daily cap shows its reset time ("Resets at 1:00 AM").
  *
- * | level     | shown at | style                                         |
- * | warning   | 75%      | thin bar above the composer, dismissible      |
- * | critical  | 90%      | same bar, stronger colour, not dismissible    |
- * | exhausted | 100%     | blocks paid Send; offers the free model       |
+ * | level     | shown at                                   | style                                   |
+ * | warning   | 75% of a cap                               | thin bar above the composer, dismissible|
+ * | critical  | 90% of a cap, or can't fund the next deposit| same bar, stronger colour, not dismissible|
+ * | exhausted | cap reached, or the wallet is empty        | blocks paid Send; offers the free model |
  */
-export function UsageBanner({ onTopUp, onRaiseLimit, onUseFree, className }: UsageBannerProps) {
+export function UsageBanner({ onRaiseCap, onAddFunds, onUseFree, className }: UsageBannerProps) {
   const alert = useUsageStore(selectVisibleAlert);
+  const daily = useUsageStore((s) => s.usage?.daily ?? null);
   const dismiss = useUsageStore((s) => s.dismiss);
   if (!alert) return null;
 
-  const act = alert.action === 'top_up' ? onTopUp : onRaiseLimit;
+  const funds = alert.action === 'add_funds' || alert.meter === 'balance';
+  const act = funds ? onAddFunds : onRaiseCap;
+  const label = funds ? 'Add funds' : 'Raise cap';
+  const reset = alert.meter === 'daily' ? resetsAtLabel(daily?.resetsAt ?? null) : null;
   const tone = alert.level === 'warning' ? 'bg-warn/10 text-text-0' : alert.level === 'critical' ? 'bg-warn/20 text-text-0 shadow-hairline-strong' : 'bg-signal/15 text-text-0 shadow-hairline-strong';
 
   return (
-    <div
-      role={alert.level === 'warning' ? 'status' : 'alert'}
-      data-usage-level={alert.level}
-      className={clsx('flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-3 py-1.5 text-sm', tone, className)}
-    >
+    <div role={alert.level === 'warning' ? 'status' : 'alert'} data-usage-level={alert.level} className={clsx('flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-3 py-1.5 text-sm', tone, className)}>
       <span className="min-w-0 flex-1">
         {alert.message}
-        <span className="text-text-2"> · Get more usage</span>
+        {reset && <span className="text-text-2"> · {reset}</span>}
+        <span className="text-text-2"> · </span>
+        <button type="button" onClick={act} className={clsx('font-medium underline-offset-2 hocus:underline', alert.level === 'exhausted' ? 'text-signal' : 'text-warn')}>
+          {label}
+        </button>
       </span>
       <span className="flex items-center gap-1">
-        <button type="button" onClick={act} className={clsx('rounded-md px-2 py-0.5 text-sm font-medium transition-colors hocus:bg-bg-2', alert.level === 'exhausted' ? 'text-signal' : 'text-warn')}>
-          {ACTION_LABEL[alert.action]}
-        </button>
         {alert.level === 'exhausted' && onUseFree && (
           <button type="button" onClick={onUseFree} className="rounded-md bg-free/15 px-2 py-0.5 text-sm font-medium text-free transition-colors hocus:bg-free/25">
             Use the free model

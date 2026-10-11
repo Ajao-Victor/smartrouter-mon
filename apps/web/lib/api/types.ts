@@ -87,26 +87,44 @@ export type PrivySignIn = z.output<typeof privySignInSchema>;
 /* ------------------------------------ usage ------------------------------------ */
 
 /**
- * Handover "Usage banners": the same `usage` object comes from `GET /me`, `GET /sessions/current`,
- * the paid `meta` event and the `done` event. The backend computes the banner; the UI only
- * renders `usage.alert`.
+ * Handover "Usage banners": the same `usage` object comes from `GET /me`, `GET /wallet` (as
+ * `caps`), `GET /sessions/current`, the paid `meta` event and the `done` event. The backend
+ * computes the banner; the UI renders `usage.alert` and the two cap bars.
+ *
+ * Parsed leniently on purpose: an unknown meter or action from a newer backend must never break
+ * `/me` (that once left the signed-in app stuck on a skeleton).
  */
 export const usageAlertSchema = z.object({
   level: z.enum(['warning', 'critical', 'exhausted']),
-  meter: z.enum(['weekly', 'deposit']),
-  usedPct: z.number(),
-  message: z.string(),
-  action: z.enum(['top_up', 'raise_limit']),
+  /** `daily` / `weekly` = spending caps; `balance` = the wallet can't fund the next deposit. */
+  meter: z.string().default('daily'),
+  usedPct: z.number().default(0),
+  message: z.string().default(''),
+  /** `raise_limit` → "Raise cap" (settings); `add_funds` → "Add funds" (Deposit panel). */
+  action: z.string().default('raise_limit'),
 });
 export type UsageAlert = z.output<typeof usageAlertSchema>;
 
+const capMeterSchema = z.object({
+  spentUsd: usdOrZero,
+  limitUsd: usdOrZero,
+  usedPct: z.number().default(0),
+  remainingUsd: usdOrZero,
+  resetsAt: isoDate.nullish().transform((v) => v ?? null),
+});
+export type CapMeter = z.output<typeof capMeterSchema>;
+
 export const usageSchema = z.object({
-  weekly: z.object({ spentUsd: usdOrZero, limitUsd: usdOrZero, usedPct: z.number().default(0) }).nullish().transform((v) => v ?? null),
+  daily: capMeterSchema.nullish().transform((v) => v ?? null),
+  weekly: capMeterSchema.nullish().transform((v) => v ?? null),
+  /** Money currently locked for answers (the automatic deposit). Shown only as "Locked for current chats". */
   deposit: z
     .object({ channelId: z.string().nullish(), depositUsd: usdOrZero, spentUsd: usdOrZero, remainingUsd: usdOrZero, usedPct: z.number().default(0) })
     .nullish()
     .transform((v) => v ?? null),
-  alert: usageAlertSchema.nullish().transform((v) => v ?? null),
+  /** Size of the next automatic deposit. */
+  nextDepositUsd: usdSchema.nullish().transform((v) => v ?? null),
+  alert: usageAlertSchema.nullish().catch(null).transform((v) => v ?? null),
 });
 export type Usage = z.output<typeof usageSchema>;
 
@@ -115,25 +133,27 @@ export type Usage = z.output<typeof usageSchema>;
 /** `PATCH /me/settings` → the updated settings (and `GET /me` nests the same object). */
 export const settingsSchema = z.preprocess(
   alias({
-    allocationUsd: ['allocation', 'allocation_usd'],
+    dailyLimitUsd: ['dailyLimit', 'daily_limit', 'daily_limit_usd'],
     weeklyLimitUsd: ['weeklyLimit', 'weekly_limit', 'weekly_limit_usd'],
     autoFreeFallback: ['auto_free_fallback'],
   }),
   z.object({
-    slider: sliderSchema.default('balanced'),
-    /** Preferred deposit (handover: `suggestedDepositUsd` returns it next time). */
-    allocationUsd: usdSchema.default(2),
-    /** Weekly spending limit (0–1000). */
+    slider: sliderSchema.catch('balanced').default('balanced'),
+    /** Daily spending cap (default $2, resets 00:00 UTC). */
+    dailyLimitUsd: usdSchema.default(2),
+    /** Weekly spending cap (default $10, last 7 days). */
     weeklyLimitUsd: usdSchema.default(10),
     autoFreeFallback: z.boolean().default(true),
     country: z.string().nullish().transform((v) => v ?? null),
+    /** PATCH only: the spending key's new on-chain daily limit — update the key to it. */
+    spendingKeyLimitUsd: z.number().nullish().transform((v) => v ?? null),
   }),
 );
 export type Settings = z.output<typeof settingsSchema>;
 
 /**
  * `GET /me` → `{ id, address, email, loginMethod, usage, settings }`. Settings are flattened onto
- * the user so screens read `user.slider`, `user.allocationUsd` … directly.
+ * the user so screens read `user.slider`, `user.dailyLimitUsd` … directly.
  */
 export const userSchema = z.preprocess(
   (v) => {
@@ -148,7 +168,7 @@ export const userSchema = z.preprocess(
       address: z.string(),
       email: z.string().nullish().transform((v) => v ?? null),
       loginMethod: z.string().nullish().transform((v) => v ?? null),
-      usage: usageSchema.nullish().transform((v) => v ?? null),
+      usage: usageSchema.nullish().catch(null).transform((v) => v ?? null),
       /** Free messages left today, when the backend includes it. */
       freeRemaining: z.number().int().nonnegative().nullish().transform((v) => v ?? null),
     })
@@ -156,14 +176,145 @@ export const userSchema = z.preprocess(
 );
 export type User = z.output<typeof userSchema>;
 
-/** `PATCH /me/settings { slider?, allocationUsd? (0.5–100), weeklyLimitUsd? (0–1000), autoFreeFallback?, country? }`. */
+/** `PATCH /me/settings { slider?, dailyLimitUsd?, weeklyLimitUsd? (0–1000), autoFreeFallback?, country? }`. */
 export interface SettingsPatch {
   slider?: SliderPreset;
-  allocationUsd?: number;
+  dailyLimitUsd?: number;
   weeklyLimitUsd?: number;
   autoFreeFallback?: boolean;
   country?: string;
 }
+
+/* ------------------------------------ wallet ----------------------------------- */
+
+/** Spending key (Tempo access key with an on-chain daily limit) — `GET /wallet` → `spendingKey`. */
+export const spendingKeySchema = z.object({
+  /** `active` | `missing` | `expiring` | `revoked` | `unknown`. */
+  status: z.string().default('missing'),
+  address: z.string().nullish().transform((v) => v ?? null),
+  expiresAt: isoDate.nullish().transform((v) => v ?? null),
+  onChain: z
+    .object({ remainingTodayUsd: z.number().nullish(), periodEndsAt: isoDate.nullish() })
+    .nullish()
+    .transform((v) => v ?? null),
+  setup: z
+    .object({
+      token: z.string(),
+      limitUsd: z.number(),
+      periodSeconds: z.number().default(86_400),
+      expiryDays: z.number().default(7),
+      scopes: z.array(z.object({ address: z.string() }).passthrough()).default([]),
+    })
+    .nullish()
+    .transform((v) => v ?? null),
+});
+export type SpendingKeyState = z.output<typeof spendingKeySchema>;
+
+const lockedSchema = z.object({ depositUsd: usdOrZero, spentUsd: usdOrZero, remainingUsd: usdOrZero });
+
+/** `GET /wallet` — the Wallet panel in one call. */
+export const walletSchema = z.object({
+  address: z.string(),
+  network: z.object({ chainId: z.number(), name: z.string().default('Tempo') }).nullish().transform((v) => v ?? null),
+  token: z.object({ address: z.string(), symbol: z.string(), decimals: z.number().default(6) }),
+  main: z.object({ balanceUsd: usdOrZero }),
+  locked: lockedSchema.nullish().transform((v) => v ?? null),
+  caps: usageSchema.nullish().catch(null).transform((v) => v ?? null),
+  spendingKey: spendingKeySchema.nullish().catch(null).transform((v) => v ?? null),
+  incomingUsd: usdOrZero,
+  networkFees: z
+    .object({ sponsoredPerDay: z.number().default(0), usedToday: z.number().default(0) })
+    .passthrough()
+    .nullish()
+    .transform((v) => v ?? null),
+  features: z
+    .object({ crossChain: z.boolean().default(false), card: z.boolean().default(false), cashOut: z.boolean().default(false) })
+    .default({}),
+});
+export type Wallet = z.output<typeof walletSchema>;
+
+export const walletChainOptionSchema = z
+  .object({
+    chain: z.string(),
+    chainId: z.number().nullish(),
+    chainName: z.string().default(''),
+    vmType: z.string().default('evm'),
+    token: z.string(),
+    method: z.string().default('direct'),
+    depositAvailable: z.boolean().default(true),
+  })
+  .passthrough();
+export type WalletChainOption = z.output<typeof walletChainOptionSchema>;
+
+/** `GET /wallet/options` → `deposit[]`, `send[]`, `card`. */
+export const walletOptionsSchema = z.object({
+  deposit: z.array(walletChainOptionSchema).default([]),
+  send: z.array(walletChainOptionSchema).default([]),
+  card: z.object({ chain: z.string(), token: z.string(), note: z.string().default('') }).passthrough().nullish().transform((v) => v ?? null),
+});
+export type WalletOptions = z.output<typeof walletOptionsSchema>;
+
+/** `POST /wallet/deposit-address { chain, token?, refundAddress? }`. */
+export const depositAddressSchema = z.object({
+  chain: z.string(),
+  chainName: z.string().nullish().transform((v) => v ?? null),
+  token: z.string(),
+  address: z.string(),
+  method: z.string().default('direct'),
+  note: z.string().nullish().transform((v) => v ?? null),
+  estimate: z
+    .object({ sendUsd: z.number(), receiveUsd: z.number(), feeUsd: z.number(), etaSeconds: z.number().nullish() })
+    .nullish()
+    .transform((v) => v ?? null),
+});
+export type DepositAddress = z.output<typeof depositAddressSchema>;
+
+export interface SendInput {
+  chain: string;
+  token: string;
+  to: string;
+  amountUsd: number;
+}
+
+/** `POST /wallet/send/quote`. */
+export const sendQuoteSchema = z.object({
+  sendUsd: z.number(),
+  receiveUsd: z.number(),
+  receiveMinUsd: z.number().nullish().transform((v) => v ?? null),
+  bridgeFeeUsd: z.number().default(0),
+  etaSeconds: z.number().nullish().transform((v) => v ?? null),
+});
+export type SendQuote = z.output<typeof sendQuoteSchema>;
+
+/** `POST /wallet/send` → calls to sign as ONE Tempo transaction with `feePayer: true`. */
+export const sendPlanSchema = z.object({
+  sendId: z.string(),
+  calls: z.array(z.object({ to: z.string(), data: z.string(), value: z.string().nullish() })),
+  feePayer: z.boolean().default(true),
+});
+export type SendPlan = z.output<typeof sendPlanSchema>;
+
+export const walletActivityItemSchema = z
+  .object({
+    id: z.string(),
+    type: z.string(),
+    status: z.string(),
+    amountUsd: z.number(),
+    deliveredUsd: z.number().nullish(),
+    chain: z.string().nullish(),
+    token: z.string().nullish(),
+    counterparty: z.string().nullish(),
+    txHash: z.string().nullish(),
+    at: isoDate,
+    spentUsd: z.number().nullish(),
+  })
+  .passthrough();
+export type WalletActivityItem = z.output<typeof walletActivityItemSchema>;
+
+export const walletActivitySchema = z.object({
+  items: z.array(walletActivityItemSchema).default([]),
+  nextBefore: z.string().nullish().transform((v) => v ?? null),
+});
 
 /* ---------------------------------- catalogue ---------------------------------- */
 
@@ -414,9 +565,10 @@ export const sessionsCurrentSchema = z.preprocess(
   z.object({
     /** Handover: false → hide paid models. */
     paidRunsEnabled: z.boolean().default(true),
-    suggestedDepositUsd: usdSchema.default(2),
+    /** Size of the next automatic deposit; 0 = a cap is reached (show the cap banner, don't pay). */
+    suggestedDepositUsd: usdSchema.default(1),
     network: paymentNetworkSchema.nullish().transform((v) => v ?? null),
-    usage: usageSchema.nullish().transform((v) => v ?? null),
+    usage: usageSchema.nullish().catch(null).transform((v) => v ?? null),
     session: sessionSummarySchema.nullish().transform((v) => v ?? null),
   }),
 );
@@ -514,6 +666,7 @@ export interface RunInput {
 export const API_ERROR_CODES = [
   'PAYMENT_REQUIRED',
   'ALLOCATION_EXHAUSTED',
+  'SPENDING_CAP_REACHED',
   'QUOTE_EXPIRED',
   'QUOTE_USED',
   'VALIDATION_FAILED',

@@ -28,21 +28,21 @@ describe('live API shapes', () => {
       loginMethod: 'wallet',
       country: null,
       usage: { weekly: { spentUsd: 0.0018, limitUsd: 10, usedPct: 0 }, deposit: DEPOSIT, alert: null },
-      settings: { slider: 'balanced', allocationUsd: 2, weeklyLimitUsd: 10, autoFreeFallback: true },
+      settings: { slider: 'balanced', dailyLimitUsd: 2, weeklyLimitUsd: 10, autoFreeFallback: true },
       allocation: { channelId: '0x490b', depositUsd: 2, usedUsd: 0.0018, remainingUsd: 1.9982 },
     });
     expect(me.address).toBe('0x7b7123cf531199d6bf4781c23ddcd965b011b9c2');
-    expect(me.allocationUsd).toBe(2_000_000);
+    expect(me.dailyLimitUsd).toBe(2_000_000);
     expect(me.weeklyLimitUsd).toBe(10_000_000);
     expect(me.autoFreeFallback).toBe(true);
     expect(me.usage?.deposit?.remainingUsd).toBe(1_998_200);
     expect(me.usage?.weekly?.spentUsd).toBe(1_800);
     // No session yet: allocation null must not break parsing.
-    expect(userSchema.parse({ address: '0xabc', usage: { weekly: { spentUsd: 0, limitUsd: 10, usedPct: 0 }, deposit: null, alert: null }, settings: { slider: 'best', allocationUsd: 3, weeklyLimitUsd: 10, autoFreeFallback: false }, allocation: null }).slider).toBe('best');
+    expect(userSchema.parse({ address: '0xabc', usage: { weekly: { spentUsd: 0, limitUsd: 10, usedPct: 0 }, deposit: null, alert: null }, settings: { slider: 'best', dailyLimitUsd: 3, weeklyLimitUsd: 10, autoFreeFallback: false }, allocation: null }).slider).toBe('best');
   });
 
   it('PATCH /me/settings answers with the settings only', () => {
-    expect(settingsSchema.parse({ slider: 'balanced', allocationUsd: 3, weeklyLimitUsd: 10, autoFreeFallback: true, country: null }).allocationUsd).toBe(3_000_000);
+    expect(settingsSchema.parse({ slider: 'balanced', dailyLimitUsd: 3, weeklyLimitUsd: 10, autoFreeFallback: true, country: null, spendingKeyLimitUsd: 4 }).dailyLimitUsd).toBe(3_000_000);
   });
 
   it('GET /sessions/current with and without a session', () => {

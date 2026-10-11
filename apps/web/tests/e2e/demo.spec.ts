@@ -3,12 +3,12 @@ import { expect, test } from '@playwright/test';
 /**
  * Handover demo path on mocks: signed out the chat screen works (guest mode) → describe the task
  * → recommendations → pick a model → sign-in (mock Privy → POST /auth/privy → X-Session-Token) →
- * the kept message sends automatically → streamed answer with charge and receipt → wallet shows
- * the deposit → new deposit (close-and-reopen) → activity.
+ * the kept message sends automatically → streamed answer with charge and receipt → chat history
+ * in the sidebar → Wallet panel (balance, locked, caps, Deposit) → activity.
  * Runs against `NEXT_PUBLIC_MOCK=1 next dev` (playwright.config webServer).
  */
 test.describe('demo path', () => {
-  test('guest → describe → pick a model → sign in → answer → receipt → new deposit → activity', async ({ page }) => {
+  test('guest → describe → pick a model → sign in → answer → receipt → wallet → activity', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByRole('heading', { level: 1 })).toContainText('Tell SmartRouter what you want done');
 
@@ -32,7 +32,7 @@ test.describe('demo path', () => {
     const reply = page.getByLabel('Assistant reply').first();
     await expect(reply.getByRole('button', { name: 'Receipt' })).toBeVisible({ timeout: 20_000 });
     await expect(reply).toContainText('Cover letter');
-    await expect(page.getByRole('button', { name: /Allocation: \$1\.99/ })).toBeVisible();
+    await expect(page.getByRole('navigation', { name: 'Chat history' }).first()).toContainText('Write a short cover letter');
 
     // Receipt: charge and status from GET /requests/:id
     await reply.getByRole('button', { name: 'Receipt' }).click();
@@ -49,20 +49,17 @@ test.describe('demo path', () => {
     await message.press('Enter');
     await expect(page.getByLabel('Assistant reply').nth(1).getByRole('button', { name: 'Receipt' })).toBeVisible({ timeout: 20_000 });
 
-    // Wallet: the open deposit; a new deposit closes it first (no top-up in v1)
-    await page.getByRole('button', { name: /Allocation: \$/ }).click();
+    // Wallet panel: one balance, locked money, both cap bars, Deposit
+    await page.getByRole('button', { name: /^Wallet/ }).click();
     const sheet = page.getByRole('dialog');
-    await expect(sheet).toContainText('Payment session');
-    await expect(sheet).toContainText('demo@smartrouter.dev');
-    await sheet.getByRole('button', { name: 'New deposit' }).click();
-    const deposit = page.getByRole('dialog', { name: 'New deposit' });
-    await deposit.getByRole('button', { name: '$5' }).click();
-    await deposit.getByRole('button', { name: 'Deposit $5' }).click();
-    await expect(deposit).toBeHidden();
-    await expect(page.getByRole('button', { name: 'Wallet' })).toBeVisible();
+    await expect(sheet).toContainText('Spending caps');
+    await expect(sheet).toContainText('Locked for current chats');
+    await sheet.getByRole('button', { name: 'Deposit' }).click();
+    await expect(sheet.getByRole('tab', { name: 'Tempo' })).toBeVisible();
+    await page.keyboard.press('Escape');
 
     // Activity lists the runs
-    await page.getByRole('link', { name: 'Activity' }).click();
+    await page.getByRole('link', { name: 'Activity' }).first().click();
     await page.waitForURL('**/activity');
     await expect(page.getByRole('list', { name: 'Requests' }).getByRole('listitem').first()).toBeVisible();
   });

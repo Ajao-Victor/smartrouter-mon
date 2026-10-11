@@ -5,37 +5,34 @@ import { Wallet } from 'lucide-react';
 
 import { formatUsd } from '@/lib/money';
 
-import { selectIsLow, useAllocationStore } from '@/stores/allocationStore';
+import { useWallet } from '@/hooks/useWallet';
 import { useUiStore } from '@/stores/uiStore';
+import { useUsageStore } from '@/stores/usageStore';
 
 /**
- * TopBar HUD: the remaining deposit from `/sessions/current` as a small pill that opens the
- * wallet sheet. Before the first paid run there is no session, so it just says Wallet.
+ * Top-bar wallet pill: the one balance from `GET /wallet` (Handover "Wallet"); opens the Wallet
+ * panel. Turns red when the wallet can't fund the next answer.
  */
 export function AllocationHUD() {
-  const status = useAllocationStore((s) => s.status);
-  const remaining = useAllocationStore((s) => s.remainingUsd);
-  const deposit = useAllocationStore((s) => s.depositUsd);
-  const low = useAllocationStore(selectIsLow);
+  const wallet = useWallet();
   const toggleWallet = useUiStore((s) => s.toggleWallet);
-  const hasSession = status !== 'none' && status !== 'closed';
-  const label = hasSession ? `Allocation: ${formatUsd(remaining)} remaining of ${formatUsd(deposit)}` : 'Wallet';
+  const alert = useUsageStore((s) => s.usage?.alert ?? null);
+  const balance = wallet.data?.main.balanceUsd;
+  const low = alert?.meter === 'balance';
+  const label = balance !== undefined ? `Wallet: ${formatUsd(balance)}` : 'Wallet';
 
   return (
     <button
       type="button"
-      data-hud="allocation"
+      data-hud="wallet"
       aria-label={label}
       onClick={() => {
         toggleWallet();
       }}
-      className={clsx(
-        'num inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors hocus:bg-bg-2',
-        status === 'used' ? 'text-signal' : low ? 'text-warn' : hasSession ? 'text-accent-2' : 'text-text-1 hocus:text-text-0',
-      )}
+      className={clsx('num inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors hocus:bg-bg-2', low ? 'text-signal' : 'text-text-1 hocus:text-text-0')}
     >
       <Wallet size={16} aria-hidden="true" />
-      {hasSession ? (status === 'toppingUp' ? 'Topping up…' : formatUsd(remaining)) : <span className="hidden sm:inline">Wallet</span>}
+      {balance !== undefined ? formatUsd(balance) : <span className="hidden sm:inline">Wallet</span>}
     </button>
   );
 }

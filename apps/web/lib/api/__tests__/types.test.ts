@@ -9,10 +9,10 @@ describe('live contract shapes (Handover "API reference")', () => {
       loginMethod: 'google',
       country: null,
       usage: { weekly: { spentUsd: 9.2, limitUsd: 10, usedPct: 92 }, deposit: null, alert: { level: 'critical', meter: 'weekly', usedPct: 92, message: "You've used 92% of your weekly limit", action: 'raise_limit' } },
-      settings: { slider: 'cheapest', allocationUsd: 5, weeklyLimitUsd: 10, autoFreeFallback: false },
+      settings: { slider: 'cheapest', dailyLimitUsd: 5, weeklyLimitUsd: 10, autoFreeFallback: false },
     });
     expect(me.slider).toBe('cheapest');
-    expect(me.allocationUsd).toBe(5_000_000);
+    expect(me.dailyLimitUsd).toBe(5_000_000);
     expect(me.autoFreeFallback).toBe(false);
     expect(me.email).toBe('a@b.co');
     expect(me.usage?.alert?.level).toBe('critical');
@@ -20,8 +20,9 @@ describe('live contract shapes (Handover "API reference")', () => {
   });
 
   it('PATCH /me/settings returns the settings object only', () => {
-    const s = settingsSchema.parse({ slider: 'balanced', allocationUsd: 0.5, weeklyLimitUsd: 0, autoFreeFallback: true, country: 'NG' });
-    expect(s.allocationUsd).toBe(500_000);
+    const s = settingsSchema.parse({ slider: 'balanced', dailyLimitUsd: 0.5, weeklyLimitUsd: 0, autoFreeFallback: true, country: 'NG', spendingKeyLimitUsd: 1.5 });
+    expect(s.dailyLimitUsd).toBe(500_000);
+    expect(s.spendingKeyLimitUsd).toBe(1.5);
     expect(s.weeklyLimitUsd).toBe(0);
   });
 
@@ -36,5 +37,16 @@ describe('live contract shapes (Handover "API reference")', () => {
     expect(c.paidRunsEnabled).toBe(false);
     expect(c.network?.chainId).toBe(4217);
     expect(c.usage?.alert).toBeNull();
+  });
+
+  it('GET /me for an empty wallet (alert meter "balance", action "add_funds") parses — this once looped the app on a skeleton', () => {
+    const me = userSchema.parse({
+      id: 'u', address: '0xabc', email: null, loginMethod: 'email', country: null,
+      usage: { daily: { spentUsd: 0, limitUsd: 2, usedPct: 0, remainingUsd: 2, resetsAt: '2026-10-12T00:00:00.000Z' }, weekly: { spentUsd: 0, limitUsd: 10, usedPct: 0, remainingUsd: 10 }, deposit: null, nextDepositUsd: 1, alert: { level: 'exhausted', meter: 'balance', usedPct: 100, action: 'add_funds', message: 'Your wallet is empty' } },
+      settings: { slider: 'balanced', dailyLimitUsd: 2, weeklyLimitUsd: 10, autoFreeFallback: true },
+      allocation: null,
+    });
+    expect(me.usage?.alert?.action).toBe('add_funds');
+    expect(me.usage?.daily?.resetsAt).toBe('2026-10-12T00:00:00.000Z');
   });
 });

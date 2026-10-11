@@ -24,6 +24,12 @@ export default function HomePage() {
   useEffect(() => {
     router.prefetch('/chat');
   }, [router]);
+  // Signed in (including on return from Google's redirect, where no callback survives): go
+  // straight to the chat.
+  const signedIn = auth.isSignedIn;
+  useEffect(() => {
+    if (signedIn) router.replace('/chat');
+  }, [signedIn, router]);
   const openApp = () => {
     startNavigation(() => {
       router.push('/chat');
@@ -36,7 +42,7 @@ export default function HomePage() {
       return;
     }
     auth.signIn(() => {
-      router.push('/chat');
+      router.replace('/chat');
     });
   };
 

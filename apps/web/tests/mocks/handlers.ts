@@ -26,6 +26,8 @@ import {
   publicRequest,
   recordRequest,
   state,
+  dailySpentUsd,
+  mockWallet,
   usage,
   weeklySpentUsd,
 } from './state';
@@ -82,15 +84,17 @@ export const handlers = [
   http.patch(url('/me/settings'), async ({ request }) => {
     const g = guard();
     if (g) return g;
-    const patch = await body<{ slider?: SliderPreset; allocationUsd?: number; weeklyLimitUsd?: number; autoFreeFallback?: boolean }>(request);
-    if (typeof patch.allocationUsd === 'number' && (patch.allocationUsd < 0.5 || patch.allocationUsd > 100)) return error(400, 'VALIDATION_FAILED', 'allocationUsd must be 0.5–100');
-    if (typeof patch.weeklyLimitUsd === 'number' && (patch.weeklyLimitUsd < 0 || patch.weeklyLimitUsd > 1000)) return error(400, 'VALIDATION_FAILED', 'weeklyLimitUsd must be 0–1000');
+    const patch = await body<{ slider?: SliderPreset; dailyLimitUsd?: number; weeklyLimitUsd?: number; autoFreeFallback?: boolean }>(request);
+    const daily = patch.dailyLimitUsd ?? state.user.dailyLimitUsd;
+    const weekly = patch.weeklyLimitUsd ?? state.user.weeklyLimitUsd;
+    if (daily < 0 || weekly < 0 || weekly > 1000) return error(400, 'VALIDATION_FAILED', 'Caps must be $0–$1,000');
+    if (daily > weekly) return error(400, 'VALIDATION_FAILED', "The daily cap can't exceed the weekly cap");
     if (patch.slider) state.user.slider = sliderOf(patch.slider);
-    if (typeof patch.allocationUsd === 'number') state.user.allocationUsd = patch.allocationUsd;
+    if (typeof patch.dailyLimitUsd === 'number') state.user.dailyLimitUsd = patch.dailyLimitUsd;
     if (typeof patch.weeklyLimitUsd === 'number') state.user.weeklyLimitUsd = patch.weeklyLimitUsd;
     if (typeof patch.autoFreeFallback === 'boolean') state.user.autoFreeFallback = patch.autoFreeFallback;
     const { address: _address, ...settings } = state.user;
-    return HttpResponse.json({ ...settings, country: null });
+    return HttpResponse.json({ ...settings, country: null, spendingKeyLimitUsd: state.user.dailyLimitUsd + 1 });
   }),
 
   /* -------------------------------- catalogue ------------------------------- */
@@ -181,18 +185,67 @@ export const handlers = [
     return HttpResponse.json({
       paidRunsEnabled: true,
       network: { chainId: 42431, token: '0x20c0000000000000000000000000000000000000', recipient: '0x00000000000000000000000000000000000000aa', operator: '0x00000000000000000000000000000000000000bb' },
-      suggestedDepositUsd: Math.max(2, state.user.allocationUsd),
+      suggestedDepositUsd: usage().nextDepositUsd,
       usage: usage(),
       session: s ? { channelId: s.channelId, depositUsd: s.depositUsd, spentUsd: s.spentUsd, remainingUsd: s.remainingUsd, settledUsd: 0, requests: s.requests, openedAt: s.openedAt, lastUsedAt: s.openedAt } : null,
     });
   }),
-  // Mock-only stand-in for what the mppx manager does on-chain (`manager.close`).
-  http.post(url('/mock/session/close'), async () => {
-    await delay(300);
-    if (state.session) state.session.status = 'closed';
-    state.session = null;
-    return HttpResponse.json({ ok: true });
+
+  /* ---------------------------------- wallet -------------------------------- */
+  http.get(url('/wallet'), () => {
+    const g = guard();
+    if (g) return g;
+    const s = state.session && state.session.status === 'open' ? state.session : null;
+    const locked = s ? { depositUsd: s.depositUsd, spentUsd: s.spentUsd, remainingUsd: s.remainingUsd } : null;
+    return HttpResponse.json({
+      address: state.user.address,
+      network: { chainId: 42431, name: 'Tempo Testnet (Moderato)' },
+      token: { address: '0x20c0000000000000000000000000000000000000', symbol: 'pathUSD', decimals: 6 },
+      main: { balanceUsd: mockWallet.balanceUsd },
+      ai: locked,
+      locked,
+      caps: usage(),
+      spendingKey: mockWallet.spendingKey
+        ? { status: 'active', address: mockWallet.spendingKey, expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(), setup: { token: '0x20c0000000000000000000000000000000000000', limitUsd: state.user.dailyLimitUsd + 1, periodSeconds: 86_400, expiryDays: 7, scopes: [{ address: '0x4d50500000000000000000000000000000000000' }] } }
+        : { status: 'missing', setup: { token: '0x20c0000000000000000000000000000000000000', limitUsd: state.user.dailyLimitUsd + 1, periodSeconds: 86_400, expiryDays: 7, scopes: [{ address: '0x4d50500000000000000000000000000000000000' }] } },
+      incomingUsd: 0,
+      networkFees: { paidBy: 'smartrouter', sponsoredPerDay: 20, usedToday: 0, relayUrl: '/relay' },
+      features: { crossChain: false, card: false, cashOut: false },
+    });
   }),
+  http.get(url('/wallet/options'), () =>
+    HttpResponse.json({ deposit: [{ chain: 'tempo', chainId: 42431, chainName: 'Tempo Testnet (Moderato)', vmType: 'evm', token: 'pathUSD', depositAvailable: true, method: 'direct' }], send: [{ chain: 'tempo', chainId: 42431, chainName: 'Tempo Testnet (Moderato)', vmType: 'evm', token: 'pathUSD', method: 'direct' }], card: null, cashOut: null }),
+  ),
+  http.get(url('/wallet/activity'), () => guard() ?? HttpResponse.json({ items: [], nextBefore: null })),
+  http.post(url('/wallet/deposit-address'), () => guard() ?? HttpResponse.json({ chain: 'tempo', token: 'pathUSD', address: state.user.address, method: 'direct' })),
+  http.post(url('/wallet/spending-key'), async ({ request }) => {
+    const g = guard();
+    if (g) return g;
+    const { accessKeyAddress } = await body<{ accessKeyAddress?: string }>(request);
+    mockWallet.spendingKey = accessKeyAddress ?? null;
+    return HttpResponse.json({ status: 'active', address: accessKeyAddress, expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString() });
+  }),
+  http.post(url('/wallet/locked/return'), () => {
+    const g = guard();
+    if (g) return g;
+    const s = state.session;
+    const returned = s ? s.remainingUsd : 0;
+    if (s) s.status = 'closed';
+    state.session = null;
+    mockWallet.balanceUsd = Math.round((mockWallet.balanceUsd + returned) * 1e6) / 1e6;
+    return HttpResponse.json({ returnedUsd: returned, skipped: [] });
+  }),
+  http.post(url('/wallet/send/quote'), async ({ request }) => {
+    const { amountUsd } = await body<{ amountUsd?: number }>(request);
+    return HttpResponse.json({ sendUsd: amountUsd ?? 0, receiveUsd: amountUsd ?? 0, bridgeFeeUsd: 0, networkFeeUsd: 0, etaSeconds: 1 });
+  }),
+  http.post(url('/wallet/send'), async ({ request }) => {
+    const { amountUsd } = await body<{ amountUsd?: number }>(request);
+    if ((amountUsd ?? 0) > mockWallet.balanceUsd) return error(400, 'VALIDATION_FAILED', `Not enough in your main wallet ($${mockWallet.balanceUsd.toFixed(2)})`);
+    mockWallet.balanceUsd = Math.round((mockWallet.balanceUsd - (amountUsd ?? 0)) * 1e6) / 1e6;
+    return HttpResponse.json({ sendId: nextId('send'), chainId: 42431, calls: [], feePayer: true });
+  }),
+  http.post(url('/wallet/send/:id/submitted'), ({ params }) => HttpResponse.json({ sendId: String(params.id), status: 'completed' })),
 
   /* --------------------------------- requests ------------------------------- */
   http.get(url('/requests'), () => {
@@ -252,10 +305,14 @@ export const handlers = [
     if (quote.free) {
       if (state.freeUsed >= FREE_LIMIT) return error(429, 'FREE_LIMIT_REACHED', 'Free messages reset at 00:00 UTC', { scope: 'user' });
     } else {
-      if (weeklySpentUsd() + quote.priceUsd > state.user.weeklyLimitUsd) {
-        return error(402, 'ALLOCATION_EXHAUSTED', `This would pass your weekly limit of $${state.user.weeklyLimitUsd.toFixed(2)}. Raise it in settings or continue free.`, { reason: 'weekly_limit', freeFallback: { available: state.freeUsed < FREE_LIMIT, modelId: FREE_MODEL_ID, freeRemainingToday: Math.max(0, FREE_LIMIT - state.freeUsed) } });
+      const fallback = { available: state.freeUsed < FREE_LIMIT, modelId: FREE_MODEL_ID, freeRemainingToday: Math.max(0, FREE_LIMIT - state.freeUsed) };
+      if (dailySpentUsd() + quote.priceUsd > state.user.dailyLimitUsd) {
+        return error(403, 'SPENDING_CAP_REACHED', "You've reached today's spending cap. Raise it in settings or continue free.", { reason: 'daily_limit', freeFallback: fallback });
       }
-      if (!state.session || state.session.status === 'closed') openSession(Math.max(2, state.user.allocationUsd));
+      if (weeklySpentUsd() + quote.priceUsd > state.user.weeklyLimitUsd) {
+        return error(403, 'SPENDING_CAP_REACHED', "You've reached this week's spending cap. Raise it in settings or continue free.", { reason: 'weekly_limit', freeFallback: fallback });
+      }
+      if (!state.session || state.session.status === 'closed') openSession(Math.max(0.01, usage().nextDepositUsd));
       const s = state.session;
       if (s && s.remainingUsd < quote.priceUsd) {
         return error(402, 'ALLOCATION_EXHAUSTED', 'Your allocation is used up', { freeFallback: { available: state.freeUsed < FREE_LIMIT, remaining: Math.max(0, FREE_LIMIT - state.freeUsed), modelId: FREE_MODEL_ID } });

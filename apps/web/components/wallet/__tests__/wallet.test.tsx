@@ -1,24 +1,53 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
+import { walletSchema } from '@/lib/api/types';
 import { micro } from '@/lib/money';
 
-import { useAllocationStore } from '@/stores/allocationStore';
+import { useAuthStore } from '@/stores/authStore';
 import { useUiStore } from '@/stores/uiStore';
 
 import { ReducedMotionProvider } from '@/components/layout/ReducedMotionProvider';
 
-import { AllocationControls } from '../AllocationControls';
+import { CapsEditor } from '../CapsEditor';
 import { WaitlistForm } from '../WaitlistForm';
 import { WalletSheet } from '../WalletSheet';
 
-vi.mock('@/lib/tempo/walletActions', () => ({ TOKEN_SYMBOL: 'pathUSD', getTokenBalance: vi.fn().mockResolvedValue({ formatted: '12.50', usd: 12_500_000, decimals: 6, symbol: 'pathUSD' }), requestFaucet: vi.fn(), sendTokens: vi.fn(), mockDebit: vi.fn() }));
+vi.mock('@/lib/tempo/walletActions', () => ({ TOKEN_SYMBOL: 'pathUSD', getTokenBalance: vi.fn(), requestFaucet: vi.fn(), sendTokens: vi.fn(), mockDebit: vi.fn() }));
+
+/** Live testnet `GET /wallet` shape (Handover "Wallet panel layout"). */
+const liveWallet = {
+  address: '0x5b9da9fa5d210691948de6f9cf6bf97fa4e8cf5b',
+  network: { chainId: 42431, name: 'Tempo Testnet (Moderato)' },
+  token: { address: '0x20c0000000000000000000000000000000000000', symbol: 'pathUSD', decimals: 6 },
+  main: { balanceUsd: 12.4 },
+  ai: null,
+  locked: { depositUsd: 1, spentUsd: 0.6, remainingUsd: 0.4 },
+  caps: {
+    daily: { spentUsd: 1.6, limitUsd: 2, usedPct: 80, remainingUsd: 0.4, resetsAt: '2026-10-12T00:00:00.000Z' },
+    weekly: { spentUsd: 4.1, limitUsd: 10, usedPct: 41, remainingUsd: 5.9 },
+    deposit: null,
+    nextDepositUsd: 0.4,
+    alert: { level: 'warning', meter: 'daily', usedPct: 80, message: "You've used 80% of today's spending cap", action: 'raise_limit' },
+  },
+  spendingKey: { status: 'missing', setup: { token: '0x20c0000000000000000000000000000000000000', limitUsd: 3, periodSeconds: 86400, expiryDays: 7, scopes: [{ address: '0x4d50500000000000000000000000000000000000' }] } },
+  incomingUsd: 2,
+  networkFees: { paidBy: 'smartrouter', sponsoredPerDay: 20, usedToday: 0, relayUrl: '/relay' },
+  features: { crossChain: false, card: false, cashOut: false },
+};
 
 const join = vi.fn();
-vi.mock('@/lib/api/endpoints', () => ({ api: { waitlist: { join: (i: unknown) => join(i) as Promise<void> } } }));
+const getWallet = vi.fn();
+const activity = vi.fn();
+vi.mock('@/lib/api/endpoints', () => ({
+  api: {
+    waitlist: { join: (i: unknown) => join(i) as Promise<void> },
+    wallet: { get: () => getWallet() as Promise<unknown>, activity: () => activity() as Promise<unknown>, options: () => Promise.resolve({ deposit: [], send: [], card: null }) },
+  },
+}));
 
 function wrap(ui: React.ReactElement) {
-  const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <ReducedMotionProvider forceReduced>{ui}</ReducedMotionProvider>
@@ -26,7 +55,7 @@ function wrap(ui: React.ReactElement) {
   );
 }
 
-const user = { address: '0x7a3f9c1e5b2d4a6f8e0c1b3d5f7a9c2e4b6d8f01', slider: 'balanced' as const, allocationUsd: micro(2_000_000), weeklyLimitUsd: micro(10_000_000), autoFreeFallback: true, freeRemaining: null, id: 'user_1', email: 'a@b.co', loginMethod: 'email', usage: null, country: null };
+const user = { address: liveWallet.address, slider: 'balanced' as const, dailyLimitUsd: micro(2_000_000), weeklyLimitUsd: micro(10_000_000), autoFreeFallback: true, freeRemaining: null, id: 'user_1', email: 'a@b.co', loginMethod: 'email', usage: null, country: null, spendingKeyLimitUsd: null };
 
 describe('WaitlistForm', () => {
   it('validates the email and posts email, country and interest', async () => {
@@ -44,42 +73,48 @@ describe('WaitlistForm', () => {
   });
 });
 
-describe('AllocationControls (PATCH /me/settings)', () => {
-  it('steps allocation and weekly limit in USD and toggles auto free fallback', () => {
-    const onChange = vi.fn();
-    wrap(<AllocationControls allocationUsd={micro(2_000_000)} weeklyLimitUsd={micro(10_000_000)} autoFreeFallback onChange={onChange} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Increase Allocation size' }));
-    expect(onChange).toHaveBeenCalledWith({ allocationUsd: 3 });
-    fireEvent.click(screen.getByRole('button', { name: 'Decrease Spending limit' }));
-    expect(onChange).toHaveBeenCalledWith({ weeklyLimitUsd: 5 });
+describe('CapsEditor (PATCH /me/settings { dailyLimitUsd, weeklyLimitUsd })', () => {
+  it('saves both caps and refuses a daily cap above the weekly one', () => {
+    const onSave = vi.fn();
+    wrap(<CapsEditor dailyLimitUsd={micro(2_000_000)} weeklyLimitUsd={micro(10_000_000)} autoFreeFallback onSave={onSave} />);
+    fireEvent.change(screen.getByLabelText('Daily cap'), { target: { value: '12' } });
+    expect(screen.getByText("The daily cap can't be more than the weekly cap.")).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save caps' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Daily cap'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save caps' }));
+    expect(onSave).toHaveBeenCalledWith({ dailyLimitUsd: 3, weeklyLimitUsd: 10 });
     fireEvent.click(screen.getByRole('switch', { name: 'Auto free fallback' }));
-    expect(onChange).toHaveBeenCalledWith({ autoFreeFallback: false });
+    expect(onSave).toHaveBeenCalledWith({ autoFreeFallback: false });
   });
 });
 
-describe('WalletSheet (payment session)', () => {
+describe('WalletSheet (GET /wallet)', () => {
   beforeEach(() => {
-    useAllocationStore.getState().reset();
-    useUiStore.setState({ walletSheetOpen: true, sdkDialogOpen: false });
+    useAuthStore.getState().signedIn({ userId: 'u', address: liveWallet.address, email: 'a@b.co', loginMethod: 'email' });
+    useUiStore.setState({ walletSheetOpen: true, walletView: 'main', sdkDialogOpen: false });
+    getWallet.mockResolvedValue(walletSchema.parse(liveWallet));
+    activity.mockResolvedValue({ items: [{ id: 'a1', type: 'deposit', status: 'completed', amountUsd: 5, chain: 'tempo', token: 'pathUSD', counterparty: null, txHash: null, at: '2026-10-11T10:00:00.000Z' }], nextBefore: null });
   });
 
-  it('explains the first deposit when there is no session', () => {
-    const onTopUp = vi.fn();
-    wrap(<WalletSheet user={user} onTopUp={onTopUp} onCloseSession={vi.fn()} onSignOut={vi.fn()} onSettings={vi.fn()} />);
-    expect(screen.getByText(/No deposit yet/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Deposit $2' }));
-    expect(onTopUp).toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Close and withdraw' })).toBeNull();
+  it('shows the balance card, locked money, both cap bars, the spending-key setup and activity', async () => {
+    wrap(<WalletSheet user={user} onSignOut={vi.fn()} onSettings={vi.fn()} />);
+    expect(await screen.findByText('$12.40')).toBeInTheDocument();
+    expect(screen.getByText('$2.00 arriving')).toBeInTheDocument();
+    expect(screen.getByText(/Locked for current chats/)).toHaveTextContent('$0.40');
+    expect(screen.getByRole('button', { name: 'Return now' })).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Today' })).toHaveAttribute('aria-valuenow', '80');
+    expect(screen.getByRole('progressbar', { name: 'This week' })).toHaveAttribute('aria-valuenow', '41');
+    expect(screen.getByText('Set up paid answers once.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument();
+    expect(await screen.findByText('Received $5.00')).toBeInTheDocument();
   });
 
-  it('shows deposit, spent, remaining and offers Top up and Close on an open session', () => {
-    useAllocationStore.getState().hydrate({ suggestedDepositUsd: micro(2_000_000), paidRunsEnabled: true, usage: null, network: { name: null, chainId: 42431, token: null, recipient: null, operator: null }, session: { depositUsd: micro(2_000_000), spentUsd: micro(500_000), remainingUsd: micro(1_500_000), requests: 3, channelId: 'ch', status: 'open', openedAt: null } });
-    const onClose = vi.fn();
-    wrap(<WalletSheet user={user} onTopUp={vi.fn()} onCloseSession={onClose} onSignOut={vi.fn()} onSettings={vi.fn()} />);
-    expect(screen.getByText('$0.50')).toBeInTheDocument();
-    expect(screen.getByText('$1.50')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'New deposit' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Close and withdraw' }));
-    expect(onClose).toHaveBeenCalled();
+  it('Deposit opens the Tempo tab with the address (testnet: no other chains)', async () => {
+    wrap(<WalletSheet user={user} onSignOut={vi.fn()} onSettings={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Deposit' }));
+    expect(useUiStore.getState().walletView).toBe('deposit');
+    expect(await screen.findByRole('tab', { name: 'Tempo' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab', { name: 'Other chain' })).toBeNull();
+    expect(screen.getByText(liveWallet.address)).toBeInTheDocument();
   });
 });

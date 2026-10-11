@@ -104,6 +104,8 @@ export function resetMockState(over: Partial<Pick<MockState, 'authed' | 'session
   const fresh = blank();
   counter = 0;
   Object.assign(state, fresh, over);
+  mockWallet.balanceUsd = 12.5;
+  mockWallet.spendingKey = null;
   seedDemoChat();
 }
 
@@ -345,30 +347,49 @@ export function weeklySpentUsd(): number {
 
 const pctOf = (part: number, whole: number) => (whole > 0 ? Math.min(100, Math.floor((part / whole) * 100)) : 0);
 
-/** The backend's usage object (Handover "Usage banners"): two meters, alert at 75/90/100%. */
+/** Paid spend since 00:00 UTC (the daily meter). */
+export function dailySpentUsd(): number {
+  const since = new Date();
+  since.setUTCHours(0, 0, 0, 0);
+  let total = 0;
+  for (const r of state.requests.values()) if (!r.free && r.status !== 'failed' && Date.parse(r.createdAt) >= since.getTime()) total += r.chargedUsd;
+  return Math.round(total * 1e6) / 1e6;
+}
+
+/** Mock main-wallet balance (USD) for the Wallet panel and the balance alert. */
+export const mockWallet = { balanceUsd: 12.5, spendingKey: null as string | null };
+
+/** The backend's usage object (Handover "Usage banners"): daily + weekly caps, alert at 75/90/100%, balance alert. */
 export function usage() {
-  const spent = weeklySpentUsd();
-  const weekly = { spentUsd: spent, limitUsd: state.user.weeklyLimitUsd, usedPct: pctOf(spent, state.user.weeklyLimitUsd) };
+  const daySpent = dailySpentUsd();
+  const weekSpent = weeklySpentUsd();
+  const left = (limit: number, spent: number) => Math.max(0, Math.round((limit - spent) * 1e6) / 1e6);
+  const tomorrow = new Date();
+  tomorrow.setUTCHours(24, 0, 0, 0);
+  const daily = { spentUsd: daySpent, limitUsd: state.user.dailyLimitUsd, usedPct: pctOf(daySpent, state.user.dailyLimitUsd), remainingUsd: left(state.user.dailyLimitUsd, daySpent), resetsAt: tomorrow.toISOString() };
+  const weekly = { spentUsd: weekSpent, limitUsd: state.user.weeklyLimitUsd, usedPct: pctOf(weekSpent, state.user.weeklyLimitUsd), remainingUsd: left(state.user.weeklyLimitUsd, weekSpent) };
   const s = state.session && state.session.status === 'open' ? state.session : null;
   const deposit = s ? { channelId: s.channelId, depositUsd: s.depositUsd, spentUsd: s.spentUsd, remainingUsd: s.remainingUsd, usedPct: pctOf(s.spentUsd, s.depositUsd) } : null;
-  const top = [{ meter: 'weekly' as const, usedPct: weekly.usedPct }, ...(deposit ? [{ meter: 'deposit' as const, usedPct: deposit.usedPct }] : [])].sort((a, b) => b.usedPct - a.usedPct)[0];
-  const level = !top ? null : top.usedPct >= 100 ? 'exhausted' : top.usedPct >= 90 ? 'critical' : top.usedPct >= 75 ? 'warning' : null;
-  const alert =
-    top && level
-      ? {
-          level,
-          meter: top.meter,
-          usedPct: top.usedPct,
-          action: top.meter === 'deposit' ? 'top_up' : 'raise_limit',
-          message:
-            top.meter === 'deposit'
-              ? level === 'exhausted'
-                ? 'Your balance is used up'
-                : `You've used ${String(top.usedPct)}% of your balance`
-              : level === 'exhausted'
-                ? "You've reached your weekly limit"
-                : `You've used ${String(top.usedPct)}% of your weekly limit`,
-        }
-      : null;
-  return { weekly, deposit, alert };
+  const nextDepositUsd = Math.min(1, daily.remainingUsd, weekly.remainingUsd);
+  const cap = daily.usedPct >= weekly.usedPct ? { meter: 'daily' as const, usedPct: daily.usedPct } : { meter: 'weekly' as const, usedPct: weekly.usedPct };
+  const level = cap.usedPct >= 100 ? 'exhausted' : cap.usedPct >= 90 ? 'critical' : cap.usedPct >= 75 ? 'warning' : null;
+  let alert: { level: string; meter: string; usedPct: number; action: string; message: string } | null = level
+    ? {
+        level,
+        meter: cap.meter,
+        usedPct: cap.usedPct,
+        action: 'raise_limit',
+        message:
+          level === 'exhausted'
+            ? cap.meter === 'daily'
+              ? "You've reached today's spending cap"
+              : "You've reached this week's spending cap"
+            : `You've used ${String(cap.usedPct)}% of ${cap.meter === 'daily' ? "today's" : "this week's"} spending cap`,
+      }
+    : null;
+  const lockedLeft = s ? s.remainingUsd : 0;
+  if (alert?.level !== 'exhausted' && nextDepositUsd > 0 && lockedLeft < 0.01 && mockWallet.balanceUsd < nextDepositUsd) {
+    alert = { level: mockWallet.balanceUsd === 0 ? 'exhausted' : 'critical', meter: 'balance', usedPct: 100, action: 'add_funds', message: mockWallet.balanceUsd === 0 ? 'Your wallet is empty' : 'Your wallet balance is low' };
+  }
+  return { daily, weekly, deposit, nextDepositUsd, alert };
 }

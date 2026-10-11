@@ -41,10 +41,10 @@ describe('mock API (live contract)', () => {
     expect(signIn.token).toBeTruthy();
     expect(signIn.address).toBe(state.user.address);
     expect(signIn.loginMethod).toBe('email');
-    const me = (await (await json('GET', '/me')).json()) as { address: string; email: string; settings: { allocationUsd: number }; usage: { alert: unknown } };
+    const me = (await (await json('GET', '/me')).json()) as { address: string; email: string; settings: { dailyLimitUsd: number }; usage: { alert: unknown } };
     expect(me.address).toBe(state.user.address);
     expect(me.email).toBe('demo@smartrouter.dev');
-    expect(me.settings.allocationUsd).toBe(2);
+    expect(me.settings.dailyLimitUsd).toBe(2);
     expect(me.usage.alert).toBeNull();
   });
 
@@ -86,8 +86,9 @@ describe('mock API (live contract)', () => {
     expect(chargedUsd).toBe(paid?.priceUsd);
     expect(state.session?.spentUsd).toBe(paid?.priceUsd);
     const s = (await (await json('GET', '/sessions/current')).json()) as { session: { remainingUsd: number } | null; suggestedDepositUsd: number };
-    expect(s.suggestedDepositUsd).toBe(2);
-    expect(s.session?.remainingUsd).toBeCloseTo(2 - (paid?.priceUsd ?? 0), 6);
+    // The next automatic deposit: $1, or less if that's all that's left of a cap.
+    expect(s.suggestedDepositUsd).toBe(1);
+    expect(s.session?.remainingUsd).toBeCloseTo(1 - (paid?.priceUsd ?? 0), 6);
     const r = (await (await json('GET', `/requests/${requestId}`)).json()) as { status: string; priceUsd: number; charged: boolean };
     expect(r.status).toBe('succeeded');
     expect(r.priceUsd).toBe(paid?.priceUsd);
@@ -144,8 +145,9 @@ describe('mock API (live contract)', () => {
   }, 20_000);
 
   it('settings, feedback, compare votes and waitlist validate their bodies', async () => {
-    const me = (await (await json('PATCH', '/me/settings', { allocationUsd: 5, autoFreeFallback: false })).json()) as { allocationUsd: number; autoFreeFallback: boolean };
-    expect(me.allocationUsd).toBe(5);
+    const me = (await (await json('PATCH', '/me/settings', { dailyLimitUsd: 5, autoFreeFallback: false })).json()) as { dailyLimitUsd: number; autoFreeFallback: boolean; spendingKeyLimitUsd: number };
+    expect(me.dailyLimitUsd).toBe(5);
+    expect(me.spendingKeyLimitUsd).toBe(6);
     expect(me.autoFreeFallback).toBe(false);
     expect((await json('POST', '/feedback', { requestId: 'req_0001', rating: 1 })).status).toBe(204);
     expect((await json('POST', '/feedback', { requestId: 'req_0001', rating: 2 })).status).toBe(400);
