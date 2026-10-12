@@ -10,6 +10,7 @@ import { useModelLabel } from '@/hooks/useModelLabel';
 import { selectEntry, useStreamStore } from '@/stores/streamStore';
 import { useUiStore } from '@/stores/uiStore';
 
+import { MessageFiles } from '@/components/chat/AttachmentChips';
 import { MediaCard } from '@/components/chat/MediaCard';
 import { PendingCard } from '@/components/chat/PendingCard';
 import { StreamText } from '@/components/chat/StreamText';
@@ -50,7 +51,8 @@ export function MessageBubble({ message, onRerunFree }: MessageBubbleProps) {
 
   if (isUser) {
     return (
-      <div className="flex justify-end">
+      <div className="flex flex-col items-end">
+        {message.attachments.length > 0 && <MessageFiles files={message.attachments} />}
         <div className="max-w-[85%] rounded-2xl rounded-br-md bg-bg-2 px-4 py-2.5 text-base leading-7 whitespace-pre-wrap text-text-0">{message.text}</div>
       </div>
     );

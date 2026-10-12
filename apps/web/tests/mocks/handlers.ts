@@ -28,6 +28,8 @@ import {
   state,
   dailySpentUsd,
   MOCK_SEND_CODE,
+  MOCK_STORAGE,
+  mockUploads,
   mockWallet,
   usage,
   weeklySpentUsd,
@@ -140,7 +142,7 @@ export const handlers = [
     const chat = state.chats.get(String(params.id));
     if (!chat || chat.archived) return error(404, 'NOT_FOUND', 'Chat not found');
     // Live shape: `{ chat, messages: [{ id, seq, role, content, modelId, resultRef, attachments, status, createdAt }], hasMore }`.
-    return HttpResponse.json({ chat: publicChat(chat), messages: chat.messages.map((m, i) => ({ id: m.id, seq: i + 1, role: m.role, content: m.text, modelId: m.modelId, resultRef: m.files[0]?.url ?? null, attachments: null, status: m.status, createdAt: m.createdAt })), hasMore: false });
+    return HttpResponse.json({ chat: publicChat(chat), messages: chat.messages.map((m, i) => ({ id: m.id, seq: i + 1, role: m.role, content: m.text, modelId: m.modelId, resultRef: m.files[0]?.url ?? null, attachments: m.attachments ?? null, status: m.status, createdAt: m.createdAt })), hasMore: false });
   }),
   http.patch(url('/chats/:id'), async ({ params, request }) => {
     const g = guard();
@@ -166,14 +168,23 @@ export const handlers = [
     if (g) return g;
     const chat = state.chats.get(String(params.id));
     if (!chat) return error(404, 'NOT_FOUND', 'Chat not found');
-    const { prompt, modelId } = await body<{ prompt?: string; modelId?: string }>(request);
+    const { prompt, modelId, attachmentIds = [] } = await body<{ prompt?: string; modelId?: string; attachmentIds?: string[] }>(request);
     if (!prompt) return error(400, 'VALIDATION_FAILED', 'prompt is required');
+    for (const id of attachmentIds) {
+      const u = mockUploads.get(id);
+      if (!u || u.status === 'deleted') return error(404, 'NOT_FOUND', 'An attached file was removed or has expired — attach it again');
+      if (u.status !== 'ready') return error(400, 'VALIDATION_FAILED', `"${u.filename}" isn't ready yet`);
+    }
     const task = classify(prompt);
     const options = optionsFor(chat.taskType, sliderOf(chat.slider ?? state.user.slider), prompt, null);
     const chosen = modelId ?? chat.currentModelId ?? options[0]?.modelId ?? FREE_MODEL_ID;
     if (!modelById(chosen)) return error(404, 'NOT_FOUND', 'Unknown model');
     await delay(120);
-    const q = makeQuote(chat.id, chosen, prompt);
+    // Files are priced in: the quote covers the prompt plus the files' text.
+    const fileText = attachmentIds.map((id) => mockUploads.get(id)?.text ?? '').join('\n');
+    const q = makeQuote(chat.id, chosen, fileText ? `${fileText}\n${prompt}` : prompt);
+    q.prompt = prompt;
+    q.attachmentIds = attachmentIds;
     const suggestion = task !== chat.taskType && (task === 'image' || task === 'music' || task === 'research') ? { modelId: optionsFor(task, 'balanced', prompt, null)[0]?.modelId ?? chosen, taskType: task, reason: `looks like ${task}` } : null;
     return HttpResponse.json({ quoteId: q.quoteId, priceUsd: q.priceUsd, free: q.free, expiresAt: q.expiresAt, modelId: q.modelId, label: modelById(chosen)?.label ?? chosen, suggestion });
   }),
@@ -304,6 +315,42 @@ export const handlers = [
     return HttpResponse.json({ ok: true }, { status: 201 });
   }),
 
+  /* --------------------------------- uploads -------------------------------- */
+  http.get(url('/uploads/limits'), () => guard() ?? HttpResponse.json({ enabled: true, maxBytes: 20 * 1024 * 1024, perDay: 30, maxPerMessage: 5, keepDays: 30, accepted: 'PDF, Word (.docx), text, Markdown, CSV, JSON or code files' })),
+  http.post(url('/uploads'), async ({ request }) => {
+    const g = guard();
+    if (g) return g;
+    const b = await body<{ filename?: string; mime?: string; sizeBytes?: number }>(request);
+    if (!b.filename || !b.sizeBytes) return error(400, 'VALIDATION_FAILED', 'filename and sizeBytes are required');
+    if (/\.(png|jpe?g|gif|zip|exe)$/i.test(b.filename)) return error(400, 'VALIDATION_FAILED', "That file type isn't supported yet. Attach PDF, Word (.docx), text, Markdown, CSV, JSON or code files.");
+    const uploadId = crypto.randomUUID();
+    const mime = b.mime || 'text/plain';
+    mockUploads.set(uploadId, { uploadId, filename: b.filename, mime, sizeBytes: b.sizeBytes, status: 'pending', text: null });
+    return HttpResponse.json({ uploadId, putUrl: `${MOCK_STORAGE}/u/${uploadId}`, method: 'PUT', headers: { 'content-type': mime }, expiresAt: new Date(Date.now() + 600_000).toISOString() }, { status: 201 });
+  }),
+  http.put(`${MOCK_STORAGE}/u/:id`, async ({ params, request }) => {
+    const u = mockUploads.get(String(params.id));
+    if (!u) return new HttpResponse(null, { status: 403 });
+    const text = await request.text();
+    u.text = u.mime === 'application/pdf' ? '[page 1]\nMock PDF text' : text;
+    return new HttpResponse(null, { status: 200 });
+  }),
+  http.post(url('/uploads/:id/complete'), ({ params }) => {
+    const g = guard();
+    if (g) return g;
+    const u = mockUploads.get(String(params.id));
+    if (!u || u.status === 'deleted') return error(404, 'NOT_FOUND', 'File not found');
+    if (u.text === null) return error(400, 'VALIDATION_FAILED', "The file hasn't finished uploading — upload it to putUrl first");
+    if (!u.text.trim()) return error(400, 'VALIDATION_FAILED', `"${u.filename}" has no text to read (a scanned PDF or an image?)`);
+    u.status = 'ready';
+    return HttpResponse.json({ uploadId: u.uploadId, filename: u.filename, mime: u.mime, sizeBytes: u.sizeBytes, status: 'ready', tokens: Math.ceil(u.text.length / 4), truncated: false, error: null });
+  }),
+  http.delete(url('/uploads/:id'), ({ params }) => {
+    const u = mockUploads.get(String(params.id));
+    if (u) u.status = 'deleted';
+    return HttpResponse.json({ ok: true });
+  }),
+
   /* ----------------------------------- run ---------------------------------- */
   http.post(url('/run'), async ({ request }) => {
     const g = guard();
@@ -339,7 +386,11 @@ export const handlers = [
 
     quote.used = true;
     const task = model.taskTypes.includes(chat.taskType) ? chat.taskType : (model.taskTypes[0] ?? 'chat');
-    const userMsg = appendMessage(chat.id, { role: 'user', text: prompt, modelId: null, requestId: null, chargedUsd: null, files: [], status: 'done' });
+    const attachments = (quote.attachmentIds ?? []).flatMap((id) => {
+      const u = mockUploads.get(id);
+      return u ? [{ kind: 'file' as const, ref: u.uploadId, name: u.filename, mime: u.mime, sizeBytes: u.sizeBytes }] : [];
+    });
+    const userMsg = appendMessage(chat.id, { role: 'user', text: prompt, modelId: null, requestId: null, chargedUsd: null, files: [], attachments: attachments.length ? attachments : null, status: 'done' });
     const requestId = nextId('req');
     const asstMsg = appendMessage(chat.id, { role: 'assistant', text: '', modelId: model.modelId, requestId, chargedUsd: null, files: [], status: 'done' });
     chat.currentModelId = model.modelId;

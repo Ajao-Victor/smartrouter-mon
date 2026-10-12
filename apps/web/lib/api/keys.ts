@@ -11,6 +11,7 @@ export const queryKeys = {
   },
   catalog: (task?: TaskType) => (task ? (['catalog', task] as const) : (['catalog'] as const)),
   chats: () => ['chats'] as const,
+  uploadLimits: () => ['uploads', 'limits'] as const,
   chat: (chatId: string) => ['chat', chatId] as const,
   request: (requestId: string) => ['request', requestId] as const,
   requests: () => ['requests'] as const,
