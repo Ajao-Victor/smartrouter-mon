@@ -32,7 +32,12 @@ test.describe('demo path', () => {
     const reply = page.getByLabel('Assistant reply').first();
     await expect(reply.getByRole('button', { name: 'Receipt' })).toBeVisible({ timeout: 20_000 });
     await expect(reply).toContainText('Cover letter');
+    // On a phone the chat history is a drawer: open it, check the chat is listed, close it again.
+    const openHistory = page.getByRole('button', { name: 'Open chat history' });
+    const isPhone = await openHistory.isVisible();
+    if (isPhone) await openHistory.click();
     await expect(page.getByRole('navigation', { name: 'Chat history' }).first()).toContainText('Write a short cover letter');
+    if (isPhone) await page.getByRole('complementary').getByRole('button', { name: 'Close sidebar' }).click();
 
     // Receipt: charge and status from GET /requests/:id
     await reply.getByRole('button', { name: 'Receipt' }).click();
@@ -58,7 +63,8 @@ test.describe('demo path', () => {
     await expect(sheet.getByRole('tab', { name: 'Tempo' })).toBeVisible();
     await page.keyboard.press('Escape');
 
-    // Activity lists the runs
+    // Activity lists the runs (on a phone its link sits in the history drawer)
+    if (isPhone) await openHistory.click();
     await page.getByRole('link', { name: 'Activity' }).first().click();
     await page.waitForURL('**/activity');
     await expect(page.getByRole('list', { name: 'Requests' }).getByRole('listitem').first()).toBeVisible();
