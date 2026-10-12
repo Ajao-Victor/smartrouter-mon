@@ -174,7 +174,7 @@ export function NewChat({ initialCategory = null }: NewChatProps) {
           <button
             type="submit"
             disabled={busy || (!description && !selected)}
-            className="inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-3 text-sm font-medium text-text-inverse transition-colors hocus:bg-accent-hi disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg bg-accent px-3 whitespace-nowrap text-sm font-medium text-text-inverse transition-colors hocus:bg-accent-hi disabled:cursor-not-allowed disabled:opacity-40"
           >
             {create.isPending || recommending ? 'Starting…' : auth.signingIn ? 'Signing in…' : description ? 'Get options' : 'Start chat'}
             <ArrowUp size={16} aria-hidden="true" />
