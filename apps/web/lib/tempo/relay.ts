@@ -18,7 +18,7 @@ export async function rootRelayClient(chainId?: number | null) {
   const token = getSessionToken() ?? '';
   return createClient({
     chain: chainFor(chainId ?? env.chainId),
-    account: account as never, // Privy bundles its own viem types; same runtime account.
+    account, // Tempo account signed by viem; Privy only signs hashes (privyWallet.ts).
     transport: withRelay(http(env.rpcUrl), http(`${env.apiUrl}/relay`, { fetchOptions: { headers: { 'X-Session-Token': token } } }), { policy: 'sign-only' }),
   });
 }
