@@ -21,6 +21,8 @@ export const queryKeys = {
     options: () => ['wallet', 'options'] as const,
     activity: () => ['wallet', 'activity'] as const,
     depositAddress: (chain: string, token: string) => ['wallet', 'deposit-address', chain, token] as const,
+    /** The spending key saved in this browser (IndexedDB), per wallet address. */
+    localKey: (address: string) => ['wallet', 'local-key', address.toLowerCase()] as const,
   },
 } as const;
 

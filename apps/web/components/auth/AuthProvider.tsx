@@ -6,7 +6,7 @@ import { getIdentityToken, PrivyProvider, useFundWallet, useIdentityToken, useLi
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { base } from 'viem/chains';
 
-import { isApiError } from '@/lib/api/client';
+import { isApiError, isOfflineError } from '@/lib/api/client';
 import { apiUnreachableHint } from '@/lib/api/errors';
 import { queryKeys } from '@/lib/api/keys';
 import type { PrivySignIn } from '@/lib/api/types';
@@ -29,7 +29,8 @@ function onSignedIn(res: PrivySignIn, qc: QueryClient): void {
 function onSignInFailed(err: unknown): void {
   clearSessionToken();
   useAuthStore.getState().signedOut();
-  if (isApiError(err) && err.code === 'NETWORK') toast.error('Could not reach SmartRouter', apiUnreachableHint());
+  console.error('[SmartRouter] sign-in failed', err);
+  if (isOfflineError(err)) toast.error('Could not reach SmartRouter', apiUnreachableHint());
   else toast.error('Sign-in failed', err instanceof Error ? err.message : undefined);
 }
 

@@ -25,10 +25,9 @@ export async function loadKeyPair(address: string): Promise<KeyPair | null> {
   return (await idb.get<KeyPair>(keyName(address))) ?? null;
 }
 
-async function createKeyPair(address: string): Promise<KeyPair> {
-  const keyPair = await WebCryptoP256.createKeyPair({ extractable: false });
-  await idb.set(keyName(address), keyPair);
-  return keyPair;
+/** Forget this browser's key for `address` (setup failed, or the server doesn't know it). */
+export async function forgetSpendingKey(address: string): Promise<void> {
+  await idb.del(keyName(address));
 }
 
 /** The access-key account that signs answers for `address` (no Privy involvement). */
@@ -45,12 +44,23 @@ export async function localKeyAddress(address: string): Promise<string | null> {
 const toUnits = (usd: number) => BigInt(Math.round(usd * 1e6));
 
 /**
- * Generate the key and authorize it with the Privy wallet (one signature; the fee goes through
- * `/relay`). Returns the key's address for `POST /wallet/spending-key`.
+ * Generate a fresh key and authorize it with the Privy wallet (one signature; the fee goes through
+ * `/relay`). The key is saved in this browser only once Tempo has accepted it, so a failed attempt
+ * never leaves behind a key Tempo doesn't know; any older saved key is dropped on failure too.
+ * Returns the key's address for `POST /wallet/spending-key`.
  */
 export async function authorizeSpendingKey(args: { address: string; setup: NonNullable<SpendingKeyState['setup']>; chainId: number | null }): Promise<string> {
   if (env.mock) return '0x000000000000000000000000000000000000beef';
-  const keyPair = (await loadKeyPair(args.address)) ?? (await createKeyPair(args.address));
+  try {
+    return await authorizeFreshKey(args);
+  } catch (err) {
+    await forgetSpendingKey(args.address).catch(() => undefined);
+    throw err;
+  }
+}
+
+async function authorizeFreshKey(args: { address: string; setup: NonNullable<SpendingKeyState['setup']>; chainId: number | null }): Promise<string> {
+  const keyPair = await WebCryptoP256.createKeyPair({ extractable: false });
   const key = keyAccount(keyPair, args.address);
   const client = await rootRelayClient(args.chainId);
   const { setup } = args;
@@ -64,6 +74,7 @@ export async function authorizeSpendingKey(args: { address: string; setup: NonNu
     calls: [{ to: zeroAddress, data: '0x' }],
     feePayer: true,
   } as never);
+  await idb.set(keyName(args.address), keyPair);
   return key.accessKeyAddress;
 }
 

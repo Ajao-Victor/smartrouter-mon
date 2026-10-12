@@ -1,5 +1,6 @@
 'use client';
 
+import { isOfflineError } from '@/lib/api/client';
 import { apiUnreachableHint } from '@/lib/api/errors';
 
 import { useAuth } from '@/hooks/useAuth';
@@ -90,8 +91,17 @@ export function AppShell({ children, title }: AppShellProps) {
             </div>
           ) : me.isOffline && !me.data ? (
             <div role="alert" className="space-y-2 rounded-lg bg-bg-1 p-4 text-sm shadow-hairline">
-              <p className="text-signal">Could not reach SmartRouter.</p>
-              <p className="text-text-2">{apiUnreachableHint()}</p>
+              {isOfflineError(me.error) ? (
+                <>
+                  <p className="text-signal">Could not reach SmartRouter.</p>
+                  <p className="text-text-2">{apiUnreachableHint()}</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-signal">Could not load your account.</p>
+                  <p className="text-text-2">{me.error?.message ?? 'Something went wrong.'}</p>
+                </>
+              )}
             </div>
           ) : (
             children

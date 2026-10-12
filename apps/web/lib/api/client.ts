@@ -94,12 +94,31 @@ export async function errorFromResponse(response: Response): Promise<ApiError> {
   });
 }
 
-/** Wrap a thrown fetch failure (offline, CORS, abort) as an `ApiError`. */
+/** True only when the browser itself reports no connection. */
+export function isDeviceOffline(): boolean {
+  return typeof navigator !== 'undefined' && !navigator.onLine;
+}
+
+export const OFFLINE_MESSAGE = 'Could not reach SmartRouter. Check your connection.';
+
+/**
+ * Wrap a thrown fetch failure (offline, CORS, blocked, abort) as an `ApiError`. "Could not reach
+ * SmartRouter" is said only when the device is actually offline; otherwise the real error message
+ * is kept (and logged) so a blocked request or a failing server can be diagnosed.
+ */
 export function errorFromFetchFailure(err: unknown): ApiError {
   if (err instanceof DOMException && err.name === 'AbortError') {
     return new ApiError({ status: 0, code: 'ABORTED', message: 'Request aborted' });
   }
-  return new ApiError({ status: 0, code: 'NETWORK', message: 'Could not reach SmartRouter. Check your connection.', details: err });
+  if (isDeviceOffline()) return new ApiError({ status: 0, code: 'NETWORK', message: OFFLINE_MESSAGE, details: err });
+  console.error('[SmartRouter] request failed', err);
+  const real = err instanceof Error && err.message ? err.message : String(err);
+  return new ApiError({ status: 0, code: 'NETWORK', message: `Request to SmartRouter failed: ${real}`, details: err });
+}
+
+/** A NETWORK error raised while the device was offline (vs. a request that failed for another reason). */
+export function isOfflineError(err: unknown): boolean {
+  return err instanceof ApiError && err.code === 'NETWORK' && err.message === OFFLINE_MESSAGE;
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';

@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck, ShieldAlert } from 'lucide-react';
 
+import { queryKeys } from '@/lib/api/keys';
 import type { Wallet } from '@/lib/api/types';
 import { localKeyAddress } from '@/lib/tempo/spendingKey';
 
@@ -21,12 +22,15 @@ function until(iso: string | null): string {
 export function SpendingKeyStatus({ wallet, onReady }: { wallet: Wallet; onReady?: () => void }) {
   const setup = useSetupSpendingKey();
   const key = wallet.spendingKey;
-  // The key lives in one browser. Signed in somewhere else, the account's key is "active" but this
-  // browser can't use it: offer setup here too (it adds a key for this browser; money is untouched).
-  const local = useQuery({ queryKey: ['spending-key-local', wallet.address], queryFn: () => localKeyAddress(wallet.address), staleTime: Infinity });
+  // Ready only when the SERVER says the key is active AND it is the key saved in this browser. A key
+  // saved here that the server doesn't know (an old failed setup), or the account's key made in
+  // another browser, both mean: show Set up (it adds a working key for this browser).
+  const local = useQuery({ queryKey: queryKeys.wallet.localKey(wallet.address), queryFn: () => localKeyAddress(wallet.address), staleTime: Infinity });
   if (!key) return null;
-  const otherBrowser = key.status === 'active' && local.isSuccess && local.data?.toLowerCase() !== key.address?.toLowerCase();
-  if (key.status === 'active' && !otherBrowser) {
+  if (key.status === 'active' && local.isPending) return <p className="text-xs text-text-2">Checking your spending key…</p>;
+  const ready = key.status === 'active' && !!local.data && !!key.address && local.data.toLowerCase() === key.address.toLowerCase();
+  const otherBrowser = key.status === 'active' && !ready;
+  if (ready) {
     return (
       <p className="flex items-start gap-2 text-xs text-text-1">
         <ShieldCheck size={14} className="mt-px shrink-0 text-free" aria-hidden="true" />
@@ -51,7 +55,6 @@ export function SpendingKeyStatus({ wallet, onReady }: { wallet: Wallet; onReady
         onClick={() => {
           setup.mutate(wallet, {
             onSuccess: () => {
-              void local.refetch();
               onReady?.();
             },
           });

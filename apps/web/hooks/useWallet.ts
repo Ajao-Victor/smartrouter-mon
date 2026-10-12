@@ -136,9 +136,16 @@ export function useSetupSpendingKey() {
     mutationFn: async (wallet: Wallet) => {
       const setup = wallet.spendingKey?.setup;
       if (!setup) throw new Error('The spending-key setup is not available right now. Reload and try again.');
-      const { authorizeSpendingKey } = await import('@/lib/tempo/spendingKey');
+      const { authorizeSpendingKey, forgetSpendingKey } = await import('@/lib/tempo/spendingKey');
       const accessKeyAddress = await authorizeSpendingKey({ address: wallet.address, setup, chainId: wallet.network?.chainId ?? null });
-      const state = await api.wallet.spendingKey(accessKeyAddress);
+      let state;
+      try {
+        state = await api.wallet.spendingKey(accessKeyAddress);
+      } catch (err) {
+        // The server didn't record it: don't keep a key the app would wrongly treat as ready.
+        await forgetSpendingKey(wallet.address).catch(() => undefined);
+        throw err;
+      }
       const { resetSession } = await import('@/lib/tempo/session');
       resetSession();
       return state;
@@ -149,6 +156,8 @@ export function useSetupSpendingKey() {
     },
     onError: (err) => {
       console.error('[SmartRouter] spending key setup failed', err);
+      // The saved key was dropped: re-read it and the server state so the Set up card stays.
+      void qc.invalidateQueries({ queryKey: queryKeys.wallet.all() });
       toast.error('Could not set up the spending key', message(err));
     },
   });
