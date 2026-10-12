@@ -15,6 +15,7 @@ import {
   requestSchema,
   privySignInSchema,
   depositAddressSchema,
+  sendCodeSchema,
   sendPlanSchema,
   sendQuoteSchema,
   sessionsCurrentSchema,
@@ -23,6 +24,7 @@ import {
   walletActivitySchema,
   walletOptionsSchema,
   walletSchema,
+  type ConfirmedSendInput,
   type SendInput,
   userSchema,
   type PrivySignInInput,
@@ -132,8 +134,10 @@ export const wallet = {
   depositAddress: (input: { chain: string; token?: string; refundAddress?: string }) => apiFetch('/wallet/deposit-address', { method: 'POST', body: input, schema: depositAddressSchema }),
   /** `POST /wallet/send/quote { chain, token, to, amountUsd }`. */
   sendQuote: (input: SendInput) => apiFetch('/wallet/send/quote', { method: 'POST', body: input, schema: sendQuoteSchema }),
-  /** `POST /wallet/send` → `{ sendId, calls, feePayer: true }`. */
-  send: (input: SendInput) => apiFetch('/wallet/send', { method: 'POST', body: input, schema: sendPlanSchema }),
+  /** `POST /wallet/send/code { chain, token, to, amountUsd }` → emails a 6-digit code for this send. */
+  sendCode: (input: SendInput) => apiFetch('/wallet/send/code', { method: 'POST', body: input, schema: sendCodeSchema }),
+  /** `POST /wallet/send { …send, verificationId, code }` → `{ sendId, calls, feePayer: true }`. */
+  send: (input: ConfirmedSendInput) => apiFetch('/wallet/send', { method: 'POST', body: input, schema: sendPlanSchema }),
   /** `POST /wallet/send/:id/submitted { txHash }`. */
   submitted: (sendId: string, txHash: string) => apiFetch<{ status: string }>(`/wallet/send/${encodeURIComponent(sendId)}/submitted`, { method: 'POST', body: { txHash } }),
   /** `GET /wallet/activity?limit=30&before=<at>`. */

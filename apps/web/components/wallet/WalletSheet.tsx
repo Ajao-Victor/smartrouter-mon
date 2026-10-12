@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { ArrowDownToLine, ArrowUpRight, ArrowLeft } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, ArrowLeft, RefreshCw } from 'lucide-react';
 
 import type { SettingsPatch, User } from '@/lib/api/types';
 import { isTestnet } from '@/lib/env';
@@ -30,6 +30,8 @@ export interface WalletSheetProps {
 }
 
 const DEPOSIT_POLL_MS = 10_000;
+/** While the panel is open the balance refreshes on its own; the button is only a backup. */
+const OPEN_POLL_MS = 30_000;
 
 /**
  * The Wallet panel (Handover "Wallet"): one balance, spending caps, Deposit and Send, and an
@@ -42,7 +44,7 @@ export function WalletSheet({ user, onSignOut, onSettings, busy = {} }: WalletSh
   const setView = useUiStore((s) => s.setWalletView);
   const toggleWallet = useUiStore((s) => s.toggleWallet);
   const openDialog = useUiStore((s) => s.openDialog);
-  const wallet = useWallet({ enabled: open, pollMs: open && view === 'deposit' ? DEPOSIT_POLL_MS : false });
+  const wallet = useWallet({ enabled: open, pollMs: !open ? false : view === 'deposit' ? DEPOSIT_POLL_MS : OPEN_POLL_MS });
   const returnLocked = useReturnLocked();
   const faucet = useFaucet(user.address);
 
@@ -117,9 +119,24 @@ export function WalletSheet({ user, onSignOut, onSettings, busy = {} }: WalletSh
       ) : (
         <div className="space-y-5 pb-4">
           {/* 1. Balance card */}
-          <section className="space-y-3 rounded-xl bg-bg-1 p-4 shadow-hairline" aria-label="Balance">
+          <section className="group space-y-3 rounded-xl bg-bg-1 p-4 shadow-hairline" aria-label="Balance">
             <div>
-              <p className="num font-display text-3xl text-text-0">{formatUsd(w.main.balanceUsd)}</p>
+              <div className="flex items-center gap-2">
+                <p className="num font-display text-3xl text-text-0">{formatUsd(w.main.balanceUsd)}</p>
+                {/* Hidden until the card is hovered (always shown, faint, on touch screens). */}
+                <button
+                  type="button"
+                  aria-label="Refresh balance"
+                  title="Refresh balance"
+                  aria-busy={wallet.isFetching}
+                  onClick={() => {
+                    if (!wallet.isFetching) void wallet.refetch();
+                  }}
+                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-bg-2 text-text-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 hocus:text-text-0 focus-visible:opacity-100 [@media(hover:none)]:opacity-60"
+                >
+                  <RefreshCw size={14} aria-hidden="true" className={wallet.isFetching ? 'animate-spin' : undefined} />
+                </button>
+              </div>
               <p className="text-xs text-text-2">
                 {w.token.symbol} · {w.network?.name ?? 'Tempo'}
               </p>

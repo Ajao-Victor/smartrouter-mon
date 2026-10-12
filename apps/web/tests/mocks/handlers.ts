@@ -27,6 +27,7 @@ import {
   recordRequest,
   state,
   dailySpentUsd,
+  MOCK_SEND_CODE,
   mockWallet,
   usage,
   weeklySpentUsd,
@@ -210,7 +211,7 @@ export const handlers = [
         : { status: 'missing', setup: { token: '0x20c0000000000000000000000000000000000000', limitUsd: state.user.dailyLimitUsd + 1, periodSeconds: 86_400, expiryDays: 7, scopes: [{ address: '0x4d50500000000000000000000000000000000000' }] } },
       incomingUsd: 0,
       networkFees: { paidBy: 'smartrouter', sponsoredPerDay: 20, usedToday: 0, relayUrl: '/relay' },
-      features: { crossChain: false, card: false, cashOut: false },
+      features: { crossChain: false, card: false, cashOut: false, sendCode: { required: true, sentTo: 'd•••@smartrouter.dev', ttlMinutes: 10 } },
     });
   }),
   http.get(url('/wallet/options'), () =>
@@ -239,9 +240,26 @@ export const handlers = [
     const { amountUsd } = await body<{ amountUsd?: number }>(request);
     return HttpResponse.json({ sendUsd: amountUsd ?? 0, receiveUsd: amountUsd ?? 0, bridgeFeeUsd: 0, networkFeeUsd: 0, etaSeconds: 1 });
   }),
+  http.post(url('/wallet/send/code'), async ({ request }) => {
+    const b = await body<{ chain?: string; token?: string; to?: string; amountUsd?: number }>(request);
+    if ((b.amountUsd ?? 0) > mockWallet.balanceUsd) return error(400, 'VALIDATION_FAILED', `Not enough in your main wallet ($${mockWallet.balanceUsd.toFixed(2)})`);
+    // A new code cancels the old one.
+    mockWallet.sendCode = { id: crypto.randomUUID(), body: JSON.stringify([b.chain, b.token, b.to?.toLowerCase(), b.amountUsd]), attemptsLeft: 5, used: false };
+    return HttpResponse.json({ verificationId: mockWallet.sendCode.id, sentTo: 'd•••@smartrouter.dev', expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), attemptsAllowed: 5, devCode: MOCK_SEND_CODE });
+  }),
   http.post(url('/wallet/send'), async ({ request }) => {
-    const { amountUsd } = await body<{ amountUsd?: number }>(request);
+    const { amountUsd, verificationId, code, chain, token, to } = await body<{ amountUsd?: number; verificationId?: string; code?: string; chain?: string; token?: string; to?: string }>(request);
+    const c = mockWallet.sendCode;
+    if (!verificationId || !code) return error(400, 'VALIDATION_FAILED', 'Enter the 6-digit code');
+    if (!c || c.id !== verificationId || c.used || c.attemptsLeft <= 0) return error(410, 'SEND_CODE_EXPIRED', 'This code has expired or was already used; request a new one');
+    if (c.body !== JSON.stringify([chain, token, to?.toLowerCase(), amountUsd])) return error(410, 'SEND_CODE_EXPIRED', 'This code was for a different amount or recipient; request a new one');
+    if (code.trim() !== MOCK_SEND_CODE) {
+      c.attemptsLeft -= 1;
+      if (c.attemptsLeft <= 0) return error(410, 'SEND_CODE_EXPIRED', 'Too many wrong codes; request a new one');
+      return error(400, 'SEND_CODE_INVALID', `Wrong code — ${String(c.attemptsLeft)} ${c.attemptsLeft === 1 ? 'try' : 'tries'} left`, { attemptsLeft: c.attemptsLeft });
+    }
     if ((amountUsd ?? 0) > mockWallet.balanceUsd) return error(400, 'VALIDATION_FAILED', `Not enough in your main wallet ($${mockWallet.balanceUsd.toFixed(2)})`);
+    c.used = true;
     mockWallet.balanceUsd = Math.round((mockWallet.balanceUsd - (amountUsd ?? 0)) * 1e6) / 1e6;
     return HttpResponse.json({ sendId: nextId('send'), chainId: 42431, calls: [], feePayer: true });
   }),
