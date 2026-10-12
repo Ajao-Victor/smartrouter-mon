@@ -13,10 +13,10 @@ import { HoloCard } from '@/components/fx/HoloCard';
 import { Attribution } from '@/components/ui/Attribution';
 import { PriceTag } from '@/components/ui/PriceTag';
 
-/** PDF: measured with live prices on Oct 7 for a writing task. */
-const CHEAP = { label: 'GLM 5.3 Flash', provider: 'OpenRouter', price: micro(800) };
-const BEST = { label: 'Claude Opus 5.5', provider: 'Anthropic', price: micro(26_000) };
-export const SAVING_LINE = '80% of the best quality at 1/34 of the price';
+/** Live testnet catalogue on Oct 12, writing task: GPT-5.6 Sol scores 0.815 to Opus's 1.0 at $0.012 vs $0.024. */
+const CHEAP = { label: 'GPT-5.6 Sol', provider: 'OpenAI', price: micro(12_000) };
+const BEST = { label: 'Claude Opus 5.5', provider: 'Anthropic', price: micro(24_000) };
+export const SAVING_LINE = '82% of the best quality at half the price';
 
 export function SavingProof() {
   const reduced = useReducedMotionSafe();
@@ -47,10 +47,10 @@ export function SavingProof() {
       className="space-y-6"
     >
       <motion.p variants={withReduced(fadeUp, reduced)} className="num text-2xs tracking-label text-text-2 uppercase">
-        Writing task · live prices · Oct 7
+        Writing task · live prices · Oct 12
       </motion.p>
       <div className="grid gap-4 sm:grid-cols-2">
-        <HoloCard ref={cheapRef} tone="teal" selected={shown} interactive className="p-5">
+        <HoloCard ref={cheapRef} tone="teal" interactive className="p-5">
           <p className="text-sm text-text-2">{CHEAP.provider} · via MPP</p>
           <p className="font-display mt-1 text-xl text-text-0">{CHEAP.label}</p>
           <div className="mt-4">
