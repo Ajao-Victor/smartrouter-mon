@@ -106,6 +106,7 @@ export function resetMockState(over: Partial<Pick<MockState, 'authed' | 'session
   Object.assign(state, fresh, over);
   mockWallet.balanceUsd = 12.5;
   mockWallet.spendingKey = null;
+  mockWallet.sendCode = null;
   seedDemoChat();
 }
 
@@ -357,7 +358,13 @@ export function dailySpentUsd(): number {
 }
 
 /** Mock main-wallet balance (USD) for the Wallet panel and the balance alert. */
-export const mockWallet = { balanceUsd: 12.5, spendingKey: null as string | null };
+/** The mock's emailed send code is always 123456 (also echoed as `devCode`, like testnet). */
+export const MOCK_SEND_CODE = '123456';
+export const mockWallet = {
+  balanceUsd: 12.5,
+  spendingKey: null as string | null,
+  sendCode: null as { id: string; body: string; attemptsLeft: number; used: boolean } | null,
+};
 
 /** The backend's usage object (Handover "Usage banners"): daily + weekly caps, alert at 75/90/100%, balance alert. */
 export function usage() {

@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isApiError } from '@/lib/api/client';
 import { api } from '@/lib/api/endpoints';
 import { queryKeys } from '@/lib/api/keys';
-import type { SendInput, Wallet } from '@/lib/api/types';
+import type { ConfirmedSendInput, SendInput, Wallet } from '@/lib/api/types';
 import { env } from '@/lib/env';
 
 import { selectIsSignedIn, useAuthStore } from '@/stores/authStore';
@@ -16,7 +16,8 @@ const message = (err: unknown) => (isApiError(err) ? err.message : err instanceo
 
 /**
  * `GET /wallet` — the whole Wallet panel from one call (Handover "Wallet panel layout"). Refreshed
- * after every deposit, send and paid answer; every 10 s while the Deposit panel is open.
+ * after every deposit, send and paid answer, when the window regains focus, every 30 s while the
+ * Wallet panel is open (10 s on Deposit), and by the refresh button next to the balance.
  */
 export function useWallet(options: { enabled?: boolean; pollMs?: number | false } = {}) {
   const signedIn = useAuthStore(selectIsSignedIn);
@@ -30,6 +31,7 @@ export function useWallet(options: { enabled?: boolean; pollMs?: number | false 
     enabled: signedIn && (options.enabled ?? true),
     staleTime: 15_000,
     refetchInterval: options.pollMs ?? false,
+    refetchOnWindowFocus: true,
   });
   return query;
 }
@@ -83,13 +85,24 @@ export function useSendQuote() {
 }
 
 /**
- * Send (Handover "Send"): `POST /wallet/send` → sign all `calls` as ONE Tempo transaction with
+ * Send, step 1 (Handover "Email code before any send out"): `POST /wallet/send/code` emails a
+ * 6-digit code bound to this chain, token, recipient and amount. A new code cancels the old one.
+ */
+export function useSendCode() {
+  return useMutation({ mutationFn: (input: SendInput) => api.wallet.sendCode(input) });
+}
+
+/** Code errors are shown on the code screen itself, not as a toast. */
+const CODE_ERRORS = new Set(['SEND_CODE_INVALID', 'SEND_CODE_EXPIRED', 'EMAIL_REQUIRED']);
+
+/**
+ * Send, step 2: `POST /wallet/send { …send, verificationId, code }` → sign all `calls` as ONE Tempo transaction with
  * `feePayer: true` through `/relay` → `POST /wallet/send/:id/submitted { txHash }`.
  */
 export function useSend() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: SendInput) => {
+    mutationFn: async (input: ConfirmedSendInput) => {
       const plan = await api.wallet.send(input);
       if (env.mock) return api.wallet.submitted(plan.sendId, `0x${'ab'.repeat(32)}`);
       const [{ sendTransactionSync }, { rootRelayClient }] = await Promise.all([import('viem/actions'), import('@/lib/tempo/relay')]);
@@ -105,6 +118,7 @@ export function useSend() {
       toast.success(r.status === 'completed' ? 'Sent' : 'Sending', r.status === 'completed' ? undefined : 'It shows as completed in Activity once it arrives.');
     },
     onError: (err) => {
+      if (isApiError(err) && CODE_ERRORS.has(err.code)) return;
       console.error('[SmartRouter] send failed', err);
       toast.error('Could not send', message(err));
     },

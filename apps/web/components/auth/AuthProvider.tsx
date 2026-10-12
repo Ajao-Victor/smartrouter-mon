@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
-import { getIdentityToken, PrivyProvider, useFundWallet, useIdentityToken, useLogin, useLogout, usePrivy, useUser, useWallets, type PrivyClientConfig } from '@privy-io/react-auth';
+import { getIdentityToken, PrivyProvider, useFundWallet, useIdentityToken, useLinkAccount, useLogin, useLogout, usePrivy, useUser, useWallets, type PrivyClientConfig } from '@privy-io/react-auth';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { base } from 'viem/chains';
 
 import { isApiError } from '@/lib/api/client';
 import { apiUnreachableHint } from '@/lib/api/errors';
+import { queryKeys } from '@/lib/api/keys';
 import type { PrivySignIn } from '@/lib/api/types';
 import { clearSessionToken, getSessionToken, registerAuthBridge, subscribeSessionToken } from '@/lib/auth/session';
 import { exchangeIdentityToken, isWrongAccount } from '@/lib/auth/signIn';
@@ -101,6 +102,13 @@ function PrivyBridge() {
     }
   }, [logout, qc, refreshUser]);
 
+  // EMAIL_REQUIRED on a send: link an email in Privy, then re-exchange so the backend has it.
+  const { linkEmail } = useLinkAccount({
+    onSuccess: () => {
+      void exchange().then(() => qc.invalidateQueries({ queryKey: queryKeys.wallet.all() }));
+    },
+  });
+
   const { login } = useLogin({
     onComplete: ({ wasAlreadyAuthenticated }) => {
       if (!wasAlreadyAuthenticated || !getSessionToken()) void exchange();
@@ -130,13 +138,14 @@ function PrivyBridge() {
       fundWallet: async ({ address, amountUsd }) => {
         await fundWallet({ address, options: { chain: base, asset: 'USDC', amount: amountUsd.toFixed(2) } as never });
       },
+      linkEmail,
     });
     registerPrivyWallets(() => walletsRef.current);
     return () => {
       registerAuthBridge(null);
       registerPrivyWallets(null);
     };
-  }, [exchange, login, logout, fundWallet]);
+  }, [exchange, login, logout, fundWallet, linkEmail]);
 
   return null;
 }

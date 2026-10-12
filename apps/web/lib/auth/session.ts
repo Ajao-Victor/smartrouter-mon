@@ -96,6 +96,8 @@ export interface AuthBridge {
   logoutPrivy: () => Promise<void>;
   /** Privy's card purchase (`useFundWallet`), sent to a deposit address. Absent on mocks. */
   fundWallet?: (args: { address: string; amountUsd: number }) => Promise<void>;
+  /** Privy's link-email flow (an account without email can't send money out: EMAIL_REQUIRED). */
+  linkEmail?: () => void;
 }
 
 let bridge: AuthBridge | null = null;
@@ -115,6 +117,13 @@ export async function logoutPrivy(): Promise<void> {
 }
 
 /** Card deposit: open Privy's checkout with the Base deposit address as the destination. */
+/** Opens Privy's "add an email" flow. Returns false when it isn't available (mock mode). */
+export function linkEmail(): boolean {
+  if (!bridge?.linkEmail) return false;
+  bridge.linkEmail();
+  return true;
+}
+
 export async function fundWithCard(args: { address: string; amountUsd: number }): Promise<void> {
   if (!bridge?.fundWallet) throw new Error('Card purchases are not available here.');
   await bridge.fundWallet(args);

@@ -7,6 +7,7 @@
  * The private key is a non-extractable WebCrypto P256 key; only the CryptoKey handle is kept, in
  * IndexedDB, per wallet address. No script (and no XSS) can read the private key out.
  */
+import { zeroAddress } from 'viem';
 import { Account, Actions, WebCryptoP256 } from 'viem/tempo';
 
 import type { SpendingKeyState } from '@/lib/api/types';
@@ -58,8 +59,11 @@ export async function authorizeSpendingKey(args: { address: string; setup: NonNu
     expiry: Math.floor(Date.now() / 1000) + setup.expiryDays * 86_400,
     limits: [{ token: setup.token as `0x${string}`, limit: toUnits(setup.limitUsd), period: setup.periodSeconds }],
     scopes: setup.scopes as never,
+    // Privy's signer refuses a Tempo transaction with no calls, so carry the empty call to the zero
+    // address that viem would add itself (the /relay fee sponsor accepts exactly this).
+    calls: [{ to: zeroAddress, data: '0x' }],
     feePayer: true,
-  });
+  } as never);
   return key.accessKeyAddress;
 }
 
