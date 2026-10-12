@@ -184,9 +184,14 @@ async function openRun(body: RunInput, free: boolean, address: string | null, si
     if (isApiError(err)) throw err;
     const mapped = toPaymentError(err);
     if (mapped) throw mapped;
-    // Only a real fetch failure (offline, CORS) is "could not reach". Anything else thrown on the
-    // paid path (Privy wallet, viem, mppx) keeps its own message so it can be diagnosed.
-    if (free || isFetchFailure(err)) throw errorFromFetchFailure(err);
+    // A fetch failure becomes NETWORK ("Could not reach SmartRouter" only if the device is offline;
+    // otherwise its real message). Anything else thrown (Privy wallet, viem, mppx) keeps its own
+    // message so it can be diagnosed.
+    if (isFetchFailure(err)) throw errorFromFetchFailure(err);
+    if (free) {
+      console.error('[SmartRouter] free run failed before streaming', err);
+      throw new ApiError({ status: 0, code: 'INTERNAL', message: err instanceof Error && err.message ? err.message : 'The run could not start.', details: err });
+    }
     console.error('[SmartRouter] paid run failed in the payment client', err);
     const message = err instanceof Error && err.message ? err.message : 'The payment could not be completed.';
     throw new ApiError({ status: 0, code: 'PAYMENT_FAILED', message: `Payment failed: ${message.slice(0, 200)}`, details: err });

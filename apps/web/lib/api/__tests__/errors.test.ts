@@ -1,4 +1,4 @@
-import { ApiError } from '../client';
+import { ApiError, OFFLINE_MESSAGE } from '../client';
 import { describeAction, toUiAction } from '../errors';
 
 const err = (code: ApiError['code'], extra: { retryAfter?: number; details?: unknown } = {}) =>
@@ -21,7 +21,9 @@ describe('error semantics (PDF "Errors and edge cases")', () => {
     expect(toUiAction(err('FREE_LIMIT_REACHED', { details: { scope: 'global' } }))).toEqual({ kind: 'free_exhausted', scope: 'global' });
     expect(toUiAction(err('PROVIDER_UNAVAILABLE'))).toEqual({ kind: 'other_model' });
     expect(toUiAction(err('NOT_FOUND'))).toEqual({ kind: 'not_found' });
-    expect(toUiAction(err('NETWORK'))).toEqual({ kind: 'offline' });
+    // "Could not reach SmartRouter" only when the device is offline; otherwise the real message.
+    expect(toUiAction(new ApiError({ status: 0, code: 'NETWORK', message: OFFLINE_MESSAGE }))).toEqual({ kind: 'offline' });
+    expect(toUiAction(new ApiError({ status: 0, code: 'NETWORK', message: 'Request to SmartRouter failed: Failed to fetch' }))).toEqual({ kind: 'toast', title: 'Request to SmartRouter failed: Failed to fetch' });
     expect(toUiAction(err('PAYMENT_CANCELLED'))).toEqual({ kind: 'payment_cancelled' });
     expect(toUiAction(new Error('boom'))).toEqual({ kind: 'toast', title: 'Something went wrong, try again', description: 'boom' });
   });

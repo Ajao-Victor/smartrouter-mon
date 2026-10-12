@@ -2,7 +2,7 @@
  * Error semantics the UI must honour (PDF "Errors and edge cases"). Maps an `ApiError` (or any
  * thrown value) to one UI action so hooks and components stay consistent.
  */
-import { ApiError, isApiError } from '@/lib/api/client';
+import { ApiError, isApiError, isOfflineError } from '@/lib/api/client';
 import { FREE_MODEL_ID, freeFallbackSchema, type FreeFallback } from '@/lib/api/types';
 import { env } from '@/lib/env';
 
@@ -57,7 +57,8 @@ export function toUiAction(err: unknown): UiErrorAction {
     case 'NOT_FOUND':
       return { kind: 'not_found' };
     case 'NETWORK':
-      return { kind: 'offline' };
+      // "Could not reach SmartRouter" only when the device is offline; otherwise the real error.
+      return isOfflineError(err) ? { kind: 'offline' } : { kind: 'toast', title: err.message };
     case 'PAYMENT_CANCELLED':
       return { kind: 'payment_cancelled' };
     case 'INTERNAL':

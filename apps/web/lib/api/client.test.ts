@@ -101,9 +101,15 @@ describe('apiFetch (PDF "Data fetching")', () => {
     }
   });
 
-  it('maps network failures', async () => {
+  it('maps network failures: "Could not reach" only when offline, else the real error', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     mockFetch(() => Promise.reject(new TypeError('Failed to fetch')));
-    await expect(apiFetch('/x')).rejects.toMatchObject({ code: 'NETWORK', status: 0 });
+    await expect(apiFetch('/x')).rejects.toMatchObject({ code: 'NETWORK', status: 0, message: 'Request to SmartRouter failed: Failed to fetch' });
+    expect(spy).toHaveBeenCalled();
+    const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    await expect(apiFetch('/x')).rejects.toMatchObject({ code: 'NETWORK', message: 'Could not reach SmartRouter. Check your connection.' });
+    online.mockRestore();
+    spy.mockRestore();
   });
 
   it('returns undefined for 204', async () => {
