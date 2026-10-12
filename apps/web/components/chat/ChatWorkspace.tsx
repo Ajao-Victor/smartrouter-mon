@@ -1,11 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { isApiError } from '@/lib/api/client';
 import { api } from '@/lib/api/endpoints';
 import { describeAction, toUiAction } from '@/lib/api/errors';
-import { FREE_MODEL_ID, type Option, type Quote, type SliderPreset } from '@/lib/api/types';
+import { FREE_MODEL_ID, type MessageAttachment, type Option, type Quote, type SliderPreset } from '@/lib/api/types';
 import { logoutPrivy, openSignIn } from '@/lib/auth/session';
 import { signOutEverywhere } from '@/lib/auth/signIn';
 import { formatUsd } from '@/lib/money';
@@ -17,7 +17,8 @@ import { usePending } from '@/hooks/usePending';
 import { isQuoteExpired } from '@/hooks/useQuote';
 import { useRun } from '@/hooks/useRun';
 import { useAllocationStore } from '@/stores/allocationStore';
-import { useAuthStore } from '@/stores/authStore';
+import { useAttachmentStore, type DraftAttachment } from '@/stores/attachmentStore';
+import { selectIsSignedIn, useAuthStore } from '@/stores/authStore';
 import { useComposerStore } from '@/stores/composerStore';
 import { toast } from '@/stores/toastStore';
 import { useUiStore } from '@/stores/uiStore';
@@ -34,19 +35,27 @@ export interface ChatWorkspaceProps {
   chatId: string;
 }
 
-/** A quote the workspace holds for the draft: which prompt and model it priced. */
+/** A quote the workspace holds for the draft: which prompt, model and files it priced. */
 interface HeldQuote {
   prompt: string;
   modelId: string | null;
+  /** The attached files' upload ids, joined. */
+  filesKey: string;
   quote: Quote;
 }
+
+/** The draft's ready files, as they'll show on the sent message. */
+function readyFiles(items: DraftAttachment[]): MessageAttachment[] {
+  return items.flatMap((a) => (a.status === 'ready' && a.uploadId ? [{ kind: 'file', ref: a.uploadId, name: a.name, mime: a.mime || null, sizeBytes: a.sizeBytes }] : []));
+}
+const keyOf = (files: MessageAttachment[]) => files.map((f) => f.ref).join(',');
 
 const QUOTE_DEBOUNCE_MS = 700;
 
 /** An option from `POST /chats` / `POST /recommend` already carries a quote for its prompt. */
 function quoteFromOption(o: Option): Quote | null {
   if (!o.quoteId || !o.expiresAt) return null;
-  return { quoteId: o.quoteId, priceUsd: o.priceUsd, free: o.free, expiresAt: o.expiresAt, modelId: o.modelId, label: o.label || null, suggestion: null };
+  return { quoteId: o.quoteId, priceUsd: o.priceUsd, free: o.free, expiresAt: o.expiresAt, modelId: o.modelId, label: o.label || null, suggestion: null, filesCut: [] };
 }
 
 /**
@@ -72,6 +81,11 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
   const setPendingOptions = useComposerStore((s) => s.setPendingOptions);
   const paidRunsEnabled = useAllocationStore((s) => s.paidRunsEnabled);
   const openWallet = useUiStore((s) => s.openWallet);
+  const signedIn = useAuthStore(selectIsSignedIn);
+  const attachmentItems = useAttachmentStore((s) => s.items);
+  const files = useMemo(() => readyFiles(attachmentItems), [attachmentItems]);
+  const filesKey = keyOf(files);
+  const filesBusy = attachmentItems.some((a) => a.status === 'uploading' || a.status === 'processing');
 
   const [held, setHeld] = useState<HeldQuote | null>(null);
   const [quoting, setQuoting] = useState(false);
@@ -85,7 +99,7 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
   const prompt = draft.trim();
   const rawOptions = pendingOptions?.chatId === chatId ? pendingOptions : null;
   const options = rawOptions && !paidRunsEnabled ? { ...rawOptions, options: rawOptions.options.filter((o) => o.free) } : rawOptions;
-  const quoteFresh = held !== null && held.prompt === prompt && held.modelId === currentModelId && !isQuoteExpired(held.quote.expiresAt);
+  const quoteFresh = held !== null && held.prompt === prompt && held.modelId === currentModelId && held.filesKey === filesKey && !isQuoteExpired(held.quote.expiresAt);
   const freshQuote = quoteFresh ? held.quote : null;
 
   useEffect(() => {
@@ -95,15 +109,17 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
     };
   }, [chat.data?.title, setPageTitle]);
 
-  /** `POST /chats/:id/quote { prompt, modelId? }` for the draft; the newest request wins. */
+  /** `POST /chats/:id/quote { prompt, modelId?, attachmentIds? }` for the draft; the newest request wins. */
   const fetchQuote = useCallback(
-    async (p: string, modelId: string | null): Promise<Quote | null> => {
+    async (p: string, modelId: string | null, withFiles: MessageAttachment[] = readyFiles(useAttachmentStore.getState().items)): Promise<Quote | null> => {
       const seq = ++quoteSeq.current;
       setQuoting(true);
       try {
-        const q = await api.chats.quote(chatId, { prompt: p, ...(modelId ? { modelId } : {}) });
+        const ids = withFiles.map((f) => f.ref);
+        const q = await api.chats.quote(chatId, { prompt: p, ...(modelId ? { modelId } : {}), ...(ids.length ? { attachmentIds: ids } : {}) });
         if (seq !== quoteSeq.current) return null;
-        setHeld({ prompt: p, modelId, quote: q });
+        setHeld({ prompt: p, modelId, filesKey: keyOf(withFiles), quote: q });
+        if (q.filesCut.length > 0) toast.info(`Too long to read in full: ${q.filesCut.join(', ')}`, 'The model gets the start of it. A paid model reads more of a file than the free one.');
         if (q.suggestion && q.suggestion.modelId !== (modelId ?? q.modelId)) {
           toast.info(`This looks like ${q.suggestion.taskType ?? 'a different task'}`, `${q.suggestion.label || q.suggestion.modelId} may do better — pick it from the model menu.`);
         }
@@ -128,20 +144,22 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
 
   // Quote the draft while the user pauses typing so the Send button always shows the price.
   useEffect(() => {
-    if (!prompt || runner.running || quoteFresh) return;
+    if (!prompt || runner.running || quoteFresh || filesBusy) return;
     const t = window.setTimeout(() => {
-      void fetchQuote(prompt, currentModelId);
+      void fetchQuote(prompt, currentModelId, files);
     }, QUOTE_DEBOUNCE_MS);
     return () => {
       window.clearTimeout(t);
     };
-  }, [prompt, currentModelId, runner.running, quoteFresh, fetchQuote]);
+  }, [prompt, currentModelId, runner.running, quoteFresh, fetchQuote, files, filesBusy]);
 
   const afterRun = useCallback(
     (result: Awaited<ReturnType<typeof runner.run>>, p: string, q: Quote) => {
       if (result === 'started') {
         setHeld(null);
         setPendingOptions(null);
+        // The files went with this message; the next one starts clean.
+        useAttachmentStore.getState().clear();
       } else if (result === 'ignored') {
         // QUOTE_USED: that quote already ran; the next Send gets a new one.
         setHeld(null);
@@ -149,7 +167,7 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
         // QUOTE_EXPIRED / VALIDATION_FAILED: re-quote silently and run.
         void fetchQuote(p, q.modelId).then((fresh) => {
           if (!fresh) return;
-          void runner.run({ prompt: p, quote: fresh, label: fresh.label, autoFreeFallback: autoFree }).then((r) => {
+          void runner.run({ prompt: p, quote: fresh, label: fresh.label, autoFreeFallback: autoFree, attachments: readyFiles(useAttachmentStore.getState().items) }).then((r) => {
             if (r !== 'needs_requote') afterRun(r, p, fresh);
           });
         });
@@ -170,7 +188,7 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
         // Wait for Retry-After seconds, then retry with a fresh quote.
         window.setTimeout(() => {
           void fetchQuote(p, q.modelId).then((fresh) => {
-            if (fresh) void runner.run({ prompt: p, quote: fresh, label: fresh.label, autoFreeFallback: autoFree }).then((r) => { afterRun(r, p, fresh); });
+            if (fresh) void runner.run({ prompt: p, quote: fresh, label: fresh.label, autoFreeFallback: autoFree, attachments: readyFiles(useAttachmentStore.getState().items) }).then((r) => { afterRun(r, p, fresh); });
           });
         }, runner.retryAfterSeconds() * 1000);
       }
@@ -182,7 +200,7 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
 
   const runWithQuote = useCallback(
     async (p: string, q: Quote) => {
-      const result = await runner.run({ prompt: p, quote: q, label: q.label, autoFreeFallback: autoFree });
+      const result = await runner.run({ prompt: p, quote: q, label: q.label, autoFreeFallback: autoFree, attachments: readyFiles(useAttachmentStore.getState().items) });
       afterRun(result, p, q);
     },
     [afterRun, autoFree, runner],
@@ -199,7 +217,7 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
       void runWithQuote(p, freshQuote);
       return;
     }
-    const shownPrice = held && held.prompt === p ? held.quote.priceUsd : null;
+    const shownPrice = held && held.prompt === p && held.filesKey === filesKey ? held.quote.priceUsd : null;
     void fetchQuote(p, currentModelId).then((q) => {
       if (!q) return;
       if (shownPrice !== null && !q.free && q.priceUsd > shownPrice) {
@@ -241,6 +259,13 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
   const onPickOption = (o: Option) => {
     if (!options) return;
     selectModel(o.modelId);
+    if (files.length > 0 || filesBusy) {
+      // The options were priced without the attached files: put the message back in the box so the
+      // price with the files shows beside Send before anything runs.
+      useComposerStore.getState().setDraft(options.prompt);
+      setPendingOptions(null);
+      return;
+    }
     const q = quoteFromOption(o);
     if (q && !isQuoteExpired(q.expiresAt)) {
       void runWithQuote(options.prompt, q);
@@ -295,7 +320,7 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
           onRerunFree={(messageId) => {
             const idx = messages.findIndex((m) => m.id === messageId);
             const prev = [...messages.slice(0, Math.max(0, idx))].reverse().find((m) => m.role === 'user');
-            if (prev) void runner.runFree(prev.text, freeModelId);
+            if (prev) void runner.runFree(prev.text, freeModelId, prev.attachments);
           }}
         >
           {options && (
@@ -328,7 +353,9 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
               }}
               onContinueFree={() => {
                 runner.clearBlocked();
-                void runner.runFree(blocked.prompt, blocked.freeFallback.modelId || freeModelId);
+                void runner.runFree(blocked.prompt, blocked.freeFallback.modelId || freeModelId, files).then((r) => {
+                  if (r === 'started') useAttachmentStore.getState().clear();
+                });
               }}
             />
           )}
@@ -344,7 +371,10 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
             openWallet('deposit');
           }}
           onUseFree={() => {
-            if (prompt) void runner.runFree(prompt, freeModelId);
+            if (prompt)
+              void runner.runFree(prompt, freeModelId, files).then((r) => {
+                if (r === 'started') useAttachmentStore.getState().clear();
+              });
             else onSelectModel(freeModelId);
           }}
         />
@@ -356,6 +386,11 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
           onSend={onSend}
           onStop={runner.cancel}
           cooldownKey={runner.cooldownKey}
+          allowAttach
+          signedIn={signedIn}
+          onAttachSignedOut={() => {
+            openSignIn();
+          }}
           {...(options ? { placeholder: 'Or type something else…' } : {})}
         />
         <p className="text-center text-2xs text-text-2">Failed answers are never charged. Quality data: LMArena, Artificial Analysis.</p>

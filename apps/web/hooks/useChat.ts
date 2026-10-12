@@ -46,6 +46,7 @@ export function optimisticMessage(over: Partial<Message> & Pick<Message, 'role' 
     chargedUsd: null,
     seq: null,
     files: [],
+    attachments: [],
     citations: [],
     status: 'done',
     ...over,

@@ -24,6 +24,7 @@ const msg = (over: Partial<Message> = {}): Message => ({
   chargedUsd: micro(900),
   seq: null,
   files: [],
+  attachments: [],
   citations: [],
   status: 'done',
   ...over,

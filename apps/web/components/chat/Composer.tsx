@@ -3,12 +3,15 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { clsx } from 'clsx';
-import { ArrowUp, Square } from 'lucide-react';
+import { ArrowUp, Paperclip, Square } from 'lucide-react';
 
 import { formatUsd, type MicroUsd } from '@/lib/money';
+import { ACCEPT } from '@/lib/uploads';
 
+import { useAttachments } from '@/hooks/useAttachments';
 import { useComposerStore } from '@/stores/composerStore';
 
+import { AttachmentChips } from '@/components/chat/AttachmentChips';
 import { ModelPill } from '@/components/chat/ModelPill';
 
 export interface ComposerQuote {
@@ -29,6 +32,10 @@ export interface ComposerProps {
   cooldownKey?: number;
   placeholder?: string;
   className?: string;
+  /** Show the attach button (needs sign-in; signed out it calls `onAttachSignedOut`). */
+  allowAttach?: boolean;
+  signedIn?: boolean;
+  onAttachSignedOut?: () => void;
 }
 
 const MAX_ROWS = 8;
@@ -50,11 +57,26 @@ export function Composer({
   cooldownKey = 0,
   placeholder = 'Message SmartRouter…',
   className,
+  allowAttach = false,
+  signedIn = true,
+  onAttachSignedOut,
 }: ComposerProps) {
   const draft = useComposerStore((s) => s.draft);
   const setDraft = useComposerStore((s) => s.setDraft);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [coolingDown, setCoolingDown] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const attachments = useAttachments();
+  const canAttach = allowAttach && attachments.enabled;
+  const addFiles = (files: File[]) => {
+    if (files.length === 0) return;
+    if (!signedIn) {
+      onAttachSignedOut?.();
+      return;
+    }
+    attachments.add(files);
+  };
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -76,7 +98,8 @@ export function Composer({
   }, [cooldownKey]);
 
   const prompt = draft.trim();
-  const canSend = prompt.length > 0 && !disabled && !running && !coolingDown;
+  // Files upload as soon as they're attached; Send waits until they're read.
+  const canSend = prompt.length > 0 && !disabled && !running && !coolingDown && !attachments.busy;
 
   const submit = () => {
     if (!canSend) return;
@@ -84,16 +107,35 @@ export function Composer({
   };
 
   /** The quoted price sits beside the Send button as a caption, never on the button itself. */
-  const priceNote = quote ? (quote.free ? 'Free' : formatUsd(quote.priceUsd)) : quoting ? 'Pricing…' : null;
+  const priceNote = attachments.busy ? 'Reading files…' : quote ? (quote.free ? 'Free' : formatUsd(quote.priceUsd)) : quoting ? 'Pricing…' : null;
 
   return (
     <form
-      className={clsx('rounded-xl bg-bg-1 shadow-hairline-strong transition-[box-shadow] focus-within:shadow-glow-accent', className)}
+      className={clsx('rounded-xl bg-bg-1 shadow-hairline-strong transition-[box-shadow] focus-within:shadow-glow-accent', dragging && 'shadow-glow-accent', className)}
       onSubmit={(e) => {
         e.preventDefault();
         submit();
       }}
+      {...(canAttach
+        ? {
+            onDragOver: (e: React.DragEvent) => {
+              if (!e.dataTransfer.types.includes('Files')) return;
+              e.preventDefault();
+              setDragging(true);
+            },
+            onDragLeave: () => {
+              setDragging(false);
+            },
+            onDrop: (e: React.DragEvent) => {
+              if (!e.dataTransfer.files.length) return;
+              e.preventDefault();
+              setDragging(false);
+              addFiles(Array.from(e.dataTransfer.files));
+            },
+          }
+        : {})}
     >
+      {canAttach && <AttachmentChips items={attachments.items} onRemove={attachments.remove} />}
       <textarea
         ref={textareaRef}
         value={draft}
@@ -103,6 +145,12 @@ export function Composer({
         aria-label="Message"
         onChange={(e) => {
           setDraft(e.target.value);
+        }}
+        onPaste={(e) => {
+          // Pasting files (not text) attaches them.
+          if (!canAttach || e.clipboardData.files.length === 0) return;
+          e.preventDefault();
+          addFiles(Array.from(e.clipboardData.files));
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -114,6 +162,39 @@ export function Composer({
       />
 
       <div className="flex items-center gap-1 px-2 pb-2">
+        {canAttach && (
+          <>
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              accept={ACCEPT}
+              className="hidden"
+              tabIndex={-1}
+              aria-hidden="true"
+              onChange={(e) => {
+                addFiles(Array.from(e.target.files ?? []));
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              aria-label="Attach files"
+              title={attachments.limits ? `Attach files — ${attachments.limits.accepted}` : 'Attach files'}
+              disabled={disabled || running}
+              onClick={() => {
+                if (!signedIn) {
+                  onAttachSignedOut?.();
+                  return;
+                }
+                fileRef.current?.click();
+              }}
+              className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-text-1 transition-colors hocus:bg-bg-2 hocus:text-text-0 disabled:opacity-40"
+            >
+              <Paperclip size={18} aria-hidden="true" />
+            </button>
+          </>
+        )}
         <ModelPill label={currentModel?.label ?? null} isFree={currentModel?.isFree ?? false} disabled={disabled} />
         <div className="flex-1" />
         {coolingDown ? (

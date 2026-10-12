@@ -477,6 +477,16 @@ function mimeFromUrl(url: string): string {
   return 'image/jpeg';
 }
 
+/** A file on a user message: `{ kind: 'file', ref: uploadId, mime, name, sizeBytes }`. */
+export const messageAttachmentSchema = z.object({
+  kind: z.string().default('file'),
+  ref: z.string(),
+  name: z.string().default('file'),
+  mime: z.string().nullish().transform((v) => v ?? null),
+  sizeBytes: z.number().nullish().transform((v) => v ?? null),
+});
+export type MessageAttachment = z.output<typeof messageAttachmentSchema>;
+
 /** Live message: `{ id, seq, role, content, modelId, resultRef, attachments, status, createdAt }`. */
 export const messageSchema = z.preprocess(
   (input) => {
@@ -496,6 +506,12 @@ export const messageSchema = z.preprocess(
     chargedUsd: usdSchema.nullish().transform((v) => v ?? null),
     seq: z.number().nullish().transform((v) => v ?? null),
     files: z.array(fileSchema).default([]),
+    /** Files the user attached to this message (`attachments[]` with `kind: 'file'`). */
+    attachments: z
+      .array(messageAttachmentSchema)
+      .nullish()
+      .catch(null)
+      .transform((v) => (v ?? []).filter((a) => a.kind === 'file')),
     citations: z.array(z.unknown()).default([]),
     status: z.string().nullish().transform((v) => v ?? 'done'),
   }),
@@ -549,12 +565,50 @@ export const quoteSchema = z.preprocess(
     modelId: z.string().nullish().transform((v) => v ?? null),
     label: z.string().nullish().transform((v) => v ?? null),
     suggestion: suggestionSchema.nullish().transform((v) => v ?? null),
+    /** Files cut to fit the model's file budget (the user is told). */
+    filesCut: z.array(z.string()).nullish().catch(null).transform((v) => v ?? []),
   }),
 );
 export type Quote = z.output<typeof quoteSchema>;
 
-export const quoteInputSchema = z.object({ prompt: z.string().min(1), modelId: z.string().optional() });
+export const quoteInputSchema = z.object({ prompt: z.string().min(1), modelId: z.string().optional(), attachmentIds: z.array(z.string()).optional() });
 export type QuoteInput = z.input<typeof quoteInputSchema>;
+
+/* ---------------------------------- uploads ----------------------------------- */
+
+/** `GET /uploads/limits` — for the attach button. */
+export const uploadLimitsSchema = z.object({
+  enabled: z.boolean().default(false),
+  maxBytes: z.number().default(20 * 1024 * 1024),
+  perDay: z.number().default(30),
+  maxPerMessage: z.number().default(5),
+  keepDays: z.number().default(30),
+  accepted: z.string().default('PDF, Word (.docx), text, Markdown, CSV, JSON or code files'),
+});
+export type UploadLimits = z.output<typeof uploadLimitsSchema>;
+
+/** `POST /uploads` → where to PUT the bytes (straight to storage). */
+export const uploadTicketSchema = z.object({
+  uploadId: z.string(),
+  putUrl: z.string().url(),
+  method: z.string().default('PUT'),
+  headers: z.record(z.string()).default({}),
+});
+export type UploadTicket = z.output<typeof uploadTicketSchema>;
+
+/** `POST /uploads/:id/complete` / `GET /uploads/:id`. */
+export const uploadSchema = z.object({
+  uploadId: z.string(),
+  filename: z.string(),
+  mime: z.string().default('application/octet-stream'),
+  sizeBytes: z.number().default(0),
+  status: z.string(),
+  tokens: z.number().nullish().transform((v) => v ?? null),
+  truncated: z.boolean().default(false),
+  error: z.string().nullish().transform((v) => v ?? null),
+  url: z.string().nullish().transform((v) => v ?? null),
+});
+export type Upload = z.output<typeof uploadSchema>;
 
 /* ---------------------------------- sessions ----------------------------------- */
 

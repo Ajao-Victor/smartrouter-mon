@@ -8,7 +8,7 @@ import { ApiError, isApiError } from '@/lib/api/client';
 import { api } from '@/lib/api/endpoints';
 import { queryKeys } from '@/lib/api/keys';
 import { runStream, type RunOutcome, type SseError } from '@/lib/api/sse';
-import { FREE_MODEL_ID, freeFallbackSchema, type FreeFallback, type Quote, type User } from '@/lib/api/types';
+import { FREE_MODEL_ID, freeFallbackSchema, type FreeFallback, type MessageAttachment, type Quote, type User } from '@/lib/api/types';
 import { env } from '@/lib/env';
 import { toPaymentError } from '@/lib/tempo/paymentErrors';
 
@@ -23,6 +23,8 @@ import { useUsageStore } from '@/stores/usageStore';
 
 export interface RunRequest {
   prompt: string;
+  /** Files priced into the quote (shown on the user's message). */
+  attachments?: MessageAttachment[];
   /** Fresh quote for the chosen model (price shown beside Send). */
   quote: Quote;
   label?: string | null;
@@ -287,7 +289,7 @@ export function useRun(chatId: string) {
         if (alert?.level === 'exhausted') {
           if (req.autoFreeFallback) {
             toast.info(alert.message || 'Paid answers are paused — continuing free');
-            return runFree(prompt);
+            return runFree(prompt, FREE_MODEL_ID, req.attachments ?? []);
           }
           setBlocked({ prompt, meter: alert.meter === 'balance' ? 'balance' : alert.meter === 'weekly' ? 'weekly' : 'daily', message: alert.message, freeFallback: FREE_FALLBACK_DEFAULT });
           return 'blocked';
@@ -302,7 +304,7 @@ export function useRun(chatId: string) {
         return handlePreflightError(err, prompt, () => undefined);
       }
 
-      const userMsg = optimisticMessage({ role: 'user', text: prompt });
+      const userMsg = optimisticMessage({ role: 'user', text: prompt, attachments: req.attachments ?? [] });
       const asstMsg = optimisticMessage({ role: 'assistant', text: '', status: 'streaming', modelId: quote.modelId });
       cache.append(userMsg);
       cache.append(asstMsg);
@@ -334,10 +336,11 @@ export function useRun(chatId: string) {
    * option's `modelId`, then `POST /run` with the plain `api()` helper — no wallet, no balance.
    */
   const runFree = useCallback(
-    async (prompt: string, modelId: string = FREE_MODEL_ID): Promise<RunStart> => {
+    async (prompt: string, modelId: string = FREE_MODEL_ID, attachments: MessageAttachment[] = []): Promise<RunStart> => {
       try {
-        const quote = await api.chats.quote(chatId, { prompt, modelId });
-        return await run({ prompt, quote: { ...quote, free: true }, autoFreeFallback: false });
+        const ids = attachments.map((a) => a.ref);
+        const quote = await api.chats.quote(chatId, { prompt, modelId, ...(ids.length ? { attachmentIds: ids } : {}) });
+        return await run({ prompt, quote: { ...quote, free: true }, autoFreeFallback: false, attachments });
       } catch (err) {
         return handlePreflightError(err, prompt, () => undefined);
       }

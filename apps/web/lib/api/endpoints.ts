@@ -10,6 +10,9 @@ import {
   chatSchema,
   createChatResponseSchema,
   quoteSchema,
+  uploadLimitsSchema,
+  uploadSchema,
+  uploadTicketSchema,
   recommendResponseSchema,
   requestListSchema,
   requestSchema,
@@ -149,5 +152,18 @@ export const wallet = {
   returnLocked: () => apiFetch<{ returnedUsd: number; skipped?: string[] }>('/wallet/locked/return', { method: 'POST', body: {} }),
 };
 
-export const api = { auth, me, catalog, chats, sessions, requests, feedback, waitlist, wallet };
+/**
+ * File uploads into chats: `POST /uploads` → PUT the bytes to `putUrl` (straight to storage) →
+ * `POST /uploads/:id/complete` (text pulled out) → `attachmentIds` on `POST /chats/:id/quote`.
+ */
+const uploads = {
+  limits: (signal?: AbortSignal) => apiFetch('/uploads/limits', { schema: uploadLimitsSchema, ...sig(signal) }),
+  create: (input: { filename: string; mime: string; sizeBytes: number }) => apiFetch('/uploads', { method: 'POST', body: input, schema: uploadTicketSchema }),
+  complete: (uploadId: string) => apiFetch(`/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST', schema: uploadSchema }),
+  /** Details plus a 10-minute link to the file (owner only). */
+  get: (uploadId: string) => apiFetch(`/uploads/${encodeURIComponent(uploadId)}`, { schema: uploadSchema }),
+  remove: (uploadId: string) => apiFetch<{ ok: boolean }>(`/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
+};
+
+export const api = { auth, me, catalog, chats, sessions, requests, feedback, waitlist, wallet, uploads };
 export type Api = typeof api;

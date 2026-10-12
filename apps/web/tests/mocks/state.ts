@@ -15,6 +15,7 @@ export interface MockMessage {
   createdAt: string;
   chargedUsd: number | null;
   files: { url: string; mime: string }[];
+  attachments?: { kind: 'file'; ref: string; name: string; mime: string; sizeBytes: number }[] | null;
   status: 'done' | 'error' | 'pending';
 }
 
@@ -40,7 +41,20 @@ export interface MockQuote {
   free: boolean;
   expiresAt: string;
   used: boolean;
+  attachmentIds?: string[];
 }
+
+/** Uploaded files (mock storage): text is pulled out on complete. */
+export interface MockUpload {
+  uploadId: string;
+  filename: string;
+  mime: string;
+  sizeBytes: number;
+  status: 'pending' | 'ready' | 'deleted';
+  text: string | null;
+}
+export const MOCK_STORAGE = 'https://mock-storage.r2.cloudflarestorage.com';
+export const mockUploads = new Map<string, MockUpload>();
 
 export interface MockSession {
   channelId: string;
@@ -107,6 +121,7 @@ export function resetMockState(over: Partial<Pick<MockState, 'authed' | 'session
   mockWallet.balanceUsd = 12.5;
   mockWallet.spendingKey = null;
   mockWallet.sendCode = null;
+  mockUploads.clear();
   seedDemoChat();
 }
 
