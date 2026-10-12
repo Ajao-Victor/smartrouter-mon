@@ -109,6 +109,16 @@ describe('WalletSheet (GET /wallet)', () => {
     expect(await screen.findByText('Received $5.00')).toBeInTheDocument();
   });
 
+  it('the refresh button next to the balance re-fetches GET /wallet', async () => {
+    wrap(<WalletSheet user={user} onSignOut={vi.fn()} onSettings={vi.fn()} />);
+    await screen.findByText('$12.40');
+    const calls = getWallet.mock.calls.length;
+    getWallet.mockResolvedValue(walletSchema.parse({ ...liveWallet, main: { balanceUsd: 15 } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh balance' }));
+    expect(await screen.findByText('$15.00')).toBeInTheDocument();
+    expect(getWallet.mock.calls.length).toBe(calls + 1);
+  });
+
   it('Deposit opens the Tempo tab with the address (testnet: no other chains)', async () => {
     wrap(<WalletSheet user={user} onSignOut={vi.fn()} onSettings={vi.fn()} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Deposit' }));

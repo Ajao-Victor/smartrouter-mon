@@ -228,7 +228,17 @@ export const walletSchema = z.object({
     .nullish()
     .transform((v) => v ?? null),
   features: z
-    .object({ crossChain: z.boolean().default(false), card: z.boolean().default(false), cashOut: z.boolean().default(false) })
+    .object({
+      crossChain: z.boolean().default(false),
+      card: z.boolean().default(false),
+      cashOut: z.boolean().default(false),
+      /** Every send out needs a 6-digit email code; `sentTo` is the masked email (null: no email). */
+      sendCode: z
+        .object({ required: z.boolean().default(true), sentTo: z.string().nullish().transform((v) => v ?? null), ttlMinutes: z.number().default(10) })
+        .nullish()
+        .catch(null)
+        .transform((v) => v ?? null),
+    })
     .default({}),
 });
 export type Wallet = z.output<typeof walletSchema>;
@@ -287,6 +297,23 @@ export const sendQuoteSchema = z.object({
 export type SendQuote = z.output<typeof sendQuoteSchema>;
 
 /** `POST /wallet/send` → calls to sign as ONE Tempo transaction with `feePayer: true`. */
+/** `POST /wallet/send/code` → the code is emailed; it is bound to this exact send. */
+export const sendCodeSchema = z.object({
+  verificationId: z.string(),
+  sentTo: z.string().nullish().transform((v) => v ?? null),
+  expiresAt: isoDate.nullish().transform((v) => v ?? null),
+  attemptsAllowed: z.number().default(5),
+  /** Testnet only, when the backend echoes codes (SEND_CODE_ECHO). */
+  devCode: z.string().nullish().transform((v) => v ?? null),
+});
+export type SendCode = z.output<typeof sendCodeSchema>;
+
+/** `POST /wallet/send` body: the send plus the emailed code. */
+export interface ConfirmedSendInput extends SendInput {
+  verificationId: string;
+  code: string;
+}
+
 export const sendPlanSchema = z.object({
   sendId: z.string(),
   calls: z.array(z.object({ to: z.string(), data: z.string(), value: z.string().nullish() })),
@@ -667,6 +694,9 @@ export const API_ERROR_CODES = [
   'PAYMENT_REQUIRED',
   'ALLOCATION_EXHAUSTED',
   'SPENDING_CAP_REACHED',
+  'SEND_CODE_INVALID',
+  'SEND_CODE_EXPIRED',
+  'EMAIL_REQUIRED',
   'QUOTE_EXPIRED',
   'QUOTE_USED',
   'VALIDATION_FAILED',
