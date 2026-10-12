@@ -23,7 +23,7 @@ describe('HomePage (landing)', () => {
     for (const label of ['Chat', 'Writing', 'Coding', 'Research', 'Translation', 'Image', 'Music']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
     }
-    expect(screen.getByText('80% of the best quality at 1/34 of the price')).toBeInTheDocument();
+    expect(screen.getByText('82% of the best quality at half the price')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Naira via Paystack/ })).toBeInTheDocument();
     expect(screen.getAllByText('Quality data: LMArena, Artificial Analysis').length).toBeGreaterThanOrEqual(1);
   });
