@@ -121,6 +121,7 @@ export function resetMockState(over: Partial<Pick<MockState, 'authed' | 'session
   mockWallet.balanceUsd = 12.5;
   mockWallet.spendingKey = null;
   mockWallet.sendCode = null;
+  mockWallet.sendCodeRequired = false;
   mockUploads.clear();
   seedDemoChat();
 }
@@ -379,6 +380,8 @@ export const mockWallet = {
   balanceUsd: 12.5,
   spendingKey: null as string | null,
   sendCode: null as { id: string; body: string; attemptsLeft: number; used: boolean } | null,
+  /** Backend SEND_CODE_REQUIRED (off on the live API since Oct 13). */
+  sendCodeRequired: false,
 };
 
 /** The backend's usage object (Handover "Usage banners"): daily + weekly caps, alert at 75/90/100%, balance alert. */

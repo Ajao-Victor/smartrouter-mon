@@ -9,7 +9,8 @@ import { MOCK_SEND_CODE, mockWallet, resetMockState } from '@/tests/mocks/state'
 import { SendPanel } from '../SendPanel';
 
 /**
- * Send with an email code (Frontend fix "Email code before any send out"), against the mock API:
+ * Send, against the mock API. By default (live backend since Oct 13) there is no email code:
+ * Review → Continue → signature. When the backend turns codes on (`features.sendCode.required`):
  * Review → Continue emails a code → six boxes → the sixth digit submits.
  */
 const wallet = walletSchema.parse({
@@ -56,7 +57,43 @@ async function toCodeScreen() {
   expect(await screen.findByText(/Enter the 6-digit code we sent to d•••@smartrouter.dev/)).toBeInTheDocument();
 }
 
-describe('SendPanel: email code before a send', () => {
+describe('SendPanel: no email code (features.sendCode.required: false)', () => {
+  const noCodes = walletSchema.parse({ ...wallet, features: { sendCode: { required: false, sentTo: null, ttlMinutes: 10 } } });
+
+  it('Continue goes straight to the send: no code screen, no email, no countdown', async () => {
+    const { onDone } = setup(noCodes);
+    fireEvent.change(screen.getByLabelText('To address'), { target: { value: TO } });
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '0.10' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+    await screen.findByRole('button', { name: 'Continue' });
+    expect(screen.queryByText(/email a code/)).toBeNull();
+    expect(screen.getByText(/^One signature\./)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => {
+      expect(onDone).toHaveBeenCalled();
+    });
+    expect(screen.queryByText(/6-digit code/)).toBeNull();
+    expect(screen.queryByText(/Resend code/)).toBeNull();
+    expect(mockWallet.sendCode).toBeNull();
+    expect(mockWallet.balanceUsd).toBeCloseTo(12.4, 6);
+  });
+
+  it('an account without email can still send when codes are off', () => {
+    setup(noCodes);
+    expect(screen.queryByText('Add an email to your account to send money out.')).toBeNull();
+  });
+
+  it('a missing sendCode feature means no codes', () => {
+    setup(walletSchema.parse({ ...wallet, features: {} }));
+    expect(screen.queryByText(/email/i)).toBeNull();
+  });
+});
+
+describe('SendPanel: email code before a send (features.sendCode.required: true)', () => {
+  beforeEach(() => {
+    mockWallet.sendCodeRequired = true;
+  });
+
   it('Continue emails a code; the right code (pasted) sends', async () => {
     const { onDone } = setup();
     await toCodeScreen();
