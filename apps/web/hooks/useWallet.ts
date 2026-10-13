@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isApiError } from '@/lib/api/client';
 import { api } from '@/lib/api/endpoints';
 import { queryKeys } from '@/lib/api/keys';
-import type { ConfirmedSendInput, SendInput, Wallet } from '@/lib/api/types';
+import type { SendInput, SendRequest, Wallet } from '@/lib/api/types';
 import { env } from '@/lib/env';
 
 import { selectIsSignedIn, useAuthStore } from '@/stores/authStore';
@@ -85,8 +85,8 @@ export function useSendQuote() {
 }
 
 /**
- * Send, step 1 (Handover "Email code before any send out"): `POST /wallet/send/code` emails a
- * 6-digit code bound to this chain, token, recipient and amount. A new code cancels the old one.
+ * Only when `features.sendCode.required` (backend SEND_CODE_REQUIRED=true): `POST /wallet/send/code`
+ * emails a 6-digit code bound to this chain, token, recipient and amount. A new code cancels the old one.
  */
 export function useSendCode() {
   return useMutation({ mutationFn: (input: SendInput) => api.wallet.sendCode(input) });
@@ -102,7 +102,7 @@ const CODE_ERRORS = new Set(['SEND_CODE_INVALID', 'SEND_CODE_EXPIRED', 'EMAIL_RE
 export function useSend() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: ConfirmedSendInput) => {
+    mutationFn: async (input: SendRequest) => {
       const plan = await api.wallet.send(input);
       if (env.mock) return api.wallet.submitted(plan.sendId, `0x${'ab'.repeat(32)}`);
       const [{ sendTransactionSync }, { rootRelayClient }] = await Promise.all([import('viem/actions'), import('@/lib/tempo/relay')]);

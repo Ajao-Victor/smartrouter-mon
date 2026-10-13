@@ -232,9 +232,12 @@ export const walletSchema = z.object({
       crossChain: z.boolean().default(false),
       card: z.boolean().default(false),
       cashOut: z.boolean().default(false),
-      /** Every send out needs a 6-digit email code; `sentTo` is the masked email (null: no email). */
+      /**
+       * Whether sends need a 6-digit email code (backend SEND_CODE_REQUIRED; off since Oct 13).
+       * `sentTo` is the masked email (null: no email).
+       */
       sendCode: z
-        .object({ required: z.boolean().default(true), sentTo: z.string().nullish().transform((v) => v ?? null), ttlMinutes: z.number().default(10) })
+        .object({ required: z.boolean().default(false), sentTo: z.string().nullish().transform((v) => v ?? null), ttlMinutes: z.number().default(10) })
         .nullish()
         .catch(null)
         .transform((v) => v ?? null),
@@ -308,11 +311,14 @@ export const sendCodeSchema = z.object({
 });
 export type SendCode = z.output<typeof sendCodeSchema>;
 
-/** `POST /wallet/send` body: the send plus the emailed code. */
+/** `POST /wallet/send` body: the send plus the emailed code (only when codes are required). */
 export interface ConfirmedSendInput extends SendInput {
   verificationId: string;
   code: string;
 }
+
+/** `POST /wallet/send` body: `{ chain, token, to, amountUsd }`, plus the code when required. */
+export type SendRequest = SendInput | ConfirmedSendInput;
 
 export const sendPlanSchema = z.object({
   sendId: z.string(),

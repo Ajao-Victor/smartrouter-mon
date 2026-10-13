@@ -63,8 +63,9 @@ function AddEmail() {
 /**
  * Send (Handover "Send", options from `GET /wallet/options` → `send[]`): pick a network, paste an
  * address, enter an amount → `POST /wallet/send/quote` shows what arrives, the bridge fee and the
- * time → Continue emails a 6-digit code (`POST /wallet/send/code`) → the code screen → one Tempo
- * transaction signed with Privy, fee paid by SmartRouter (`/relay`).
+ * time → Continue → one Tempo transaction signed with Privy, fee paid by SmartRouter (`/relay`).
+ * Only when the backend requires it (`features.sendCode.required`), Continue first emails a 6-digit
+ * code (`POST /wallet/send/code`) and the code screen runs before the signature.
  */
 export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: () => void; onDone: () => void }) {
   const options = useWalletOptions();
@@ -83,7 +84,10 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
   const [focusKey, setFocusKey] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const sendCode = wallet.features.sendCode;
-  const noEmail = sendCode !== null && sendCode.required && sendCode.sentTo === null;
+  // The backend decides (features.sendCode.required). Off: Continue goes straight to the signature.
+  // On: the email-code screen below runs first.
+  const codeRequired = sendCode?.required ?? false;
+  const noEmail = codeRequired && sendCode?.sentTo === null;
 
   // Resend countdown.
   useEffect(() => {
@@ -243,6 +247,11 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
             });
             return;
           }
+          if (!codeRequired) {
+            // No email code: POST /wallet/send → sign send.calls (fee paid via /relay) → /submitted.
+            send.mutate(input, { onSuccess: onDone });
+            return;
+          }
           // Same send and its code is still usable: back to the code screen without a new email.
           const live = pending && same(pending.input, input) && (!pending.code.expiresAt || Date.parse(pending.code.expiresAt) > Date.now());
           if (live) {
@@ -340,17 +349,19 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
           <p role="alert" className="text-sm text-signal">
             {codeErrorText(codeError)}
           </p>
-        ) : quoteFresh && sendCode?.sentTo ? (
+        ) : codeRequired && quoteFresh && sendCode?.sentTo ? (
           <p className="text-xs text-text-2">We&apos;ll email a code to {sendCode.sentTo} to confirm.</p>
         ) : null}
         <button
           type="submit"
-          disabled={!input || tooMuch || noEmail || quoteMut.isPending || codeMut.isPending}
+          disabled={!input || tooMuch || noEmail || quoteMut.isPending || codeMut.isPending || send.isPending}
           className="inline-flex h-10 w-full items-center justify-center rounded-lg bg-accent text-sm font-medium text-text-inverse transition-colors hocus:bg-accent-hi disabled:opacity-60"
         >
-          {codeMut.isPending ? 'Emailing your code…' : quoteMut.isPending ? 'Getting a quote…' : quoteFresh ? 'Continue' : 'Review'}
+          {send.isPending ? 'Sending…' : codeMut.isPending ? 'Emailing your code…' : quoteMut.isPending ? 'Getting a quote…' : quoteFresh ? 'Continue' : 'Review'}
         </button>
-        <p className="text-xs text-text-2">An emailed code, then one signature. SmartRouter pays the Tempo network fee; you only pay the bridge fee for other chains, shown above.</p>
+        <p className="text-xs text-text-2">
+          {codeRequired ? 'An emailed code, then one signature.' : 'One signature.'} SmartRouter pays the Tempo network fee; you only pay the bridge fee for other chains, shown above.
+        </p>
       </form>
     </div>
   );
