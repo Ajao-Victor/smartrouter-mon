@@ -61,14 +61,14 @@ export const mockModels: MockModel[] = [
 ];
 
 export const SAMPLE_REPLY: Record<TaskType, string> = {
-  chat: "Here's a quick take: SmartRouter picks the model, you pay per use from your Tempo wallet, and the free model keeps you moving when the allocation runs out.",
+  chat: "Here's a quick take: SmartRouter picks the model, you pay per use in USDC on Monad, and the free model keeps you moving when the allocation runs out.",
   writing:
     "**Cover letter — draft**\n\nDear Hiring Team,\n\nI'm applying for the role because I build payment flows that people actually finish. At my last job I shipped a wallet onboarding that cut drop-off by 38%.\n\nI'd love to bring that to your team.\n\nWarm regards,\nAda",
   coding:
     "Here's the fix:\n\n```ts\nexport function roundUp(micro: number) {\n  return Math.ceil(micro / 100) * 100;\n}\n```\n\nThe bug was `Math.round`, which rounded $0.00085 down. The PDF rule is round **up** to $0.0001.",
   research:
-    'Three sources agree:\n\n1. Tempo settles stablecoin transfers in under a second.\n2. MPP lets a client pay per request with signed vouchers.\n3. Fees are sponsored, so the user only ever spends the stablecoin.\n\nSee the Tempo docs and the MPP spec for details.',
-  translation: 'Bonjour ! SmartRouter choisit le meilleur modèle pour votre budget et vous payez à l’usage depuis votre portefeuille Tempo.',
+    'Three sources agree:\n\n1. Monad confirms transactions in about a second.\n2. Signed vouchers let a client pay per request without a transaction each time.\n3. Gas is sponsored, so the user only ever spends USDC.\n\nSee the Monad docs and the EIP-712 spec for details.',
+  translation: 'Bonjour ! SmartRouter choisit le meilleur modèle pour votre budget et vous payez à l’usage en USDC sur Monad.',
   image: 'Your image is ready.',
   music: 'Your song is ready.',
 };
