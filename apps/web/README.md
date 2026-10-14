@@ -31,9 +31,9 @@ Set `NEXT_PUBLIC_MOCK=1` in `.env.local` to run fully offline against the MSW mo
 
 ## Environment
 
-Four public values (PDF "Vercel environment variables"): `NEXT_PUBLIC_API_URL`,
-`NEXT_PUBLIC_TEMPO_NETWORK` (`tempo` | `moderato`), `NEXT_PUBLIC_CHAIN_ID` (4217 | 42431),
-`NEXT_PUBLIC_RPC_URL` (public RPC only). Optional: object-storage host, Sentry DSN, feature flags
+Four public values (Monad handoff): `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_CHAIN_ID` (143, Monad
+mainnet), `NEXT_PUBLIC_RPC_URL` (public RPC only, default `https://rpc.monad.xyz`) and
+`NEXT_PUBLIC_PRIVY_APP_ID`. Optional: object-storage host, Sentry DSN, feature flags
 (`FLAG_COMPARE`, `FLAG_MUSIC`), `MOCK`. No keys of any kind exist in this app. See `.env.example` and
 `../../Deployment_Guide.md`.
 
