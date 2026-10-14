@@ -23,7 +23,7 @@ describe('TxHashReveal', () => {
     expect(screen.getByLabelText(`Transaction ${HASH}`)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Copy transaction hash' }));
     expect(writeText).toHaveBeenCalledWith(HASH);
-    expect(screen.getByRole('link', { name: 'View on Tempo explorer' })).toHaveAttribute('href', `https://explore.testnet.tempo.xyz/tx/${HASH}`);
+    expect(screen.getByRole('link', { name: 'View on Monad explorer' })).toHaveAttribute('href', `https://monadscan.com/tx/${HASH}`);
   });
 
   it('refuses invalid hashes', () => {
