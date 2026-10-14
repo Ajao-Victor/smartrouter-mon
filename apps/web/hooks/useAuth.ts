@@ -30,9 +30,9 @@ export function useAuth() {
   const signOut = useMutation({
     mutationFn: async () => {
       await signOutEverywhere(logoutPrivy);
-      // The open deposit stays open; the backend settles it after 10 idle minutes and closes it after 24 h.
-      const { resetSession } = await import('@/lib/tempo/session');
-      resetSession();
+      // The AI balance stays in the vault for the next sign-in; the spending key stays in this browser.
+      const { resetPayments } = await import('@/lib/monad/payments');
+      resetPayments();
     },
     onSettled: () => {
       qc.clear();
