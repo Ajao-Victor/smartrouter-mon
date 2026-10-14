@@ -11,17 +11,19 @@ import { Skeleton } from '@/components/ui/Skeleton';
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
-/** Handover "Activity": how each `type` reads. */
+/** How each activity `type` reads (Monad backend `GET /wallet/activity`). */
 function describe(i: WalletActivityItem): string {
   switch (i.type) {
     case 'deposit':
-      return `Received ${usd(i.amountUsd)}${i.chain && i.chain !== 'tempo' ? ` from ${i.chain}` : ''}${i.counterparty ? ` · ${shortHex(i.counterparty)}` : ''}`;
+      return `Received ${usd(i.amountUsd)}${i.chain && i.chain !== 'monad' ? ` via ${i.chain === 'aurora' ? 'another chain' : i.chain}` : ''}${i.counterparty ? ` · ${shortHex(i.counterparty)}` : ''}`;
     case 'send':
-      return `Sent ${usd(i.amountUsd)} to ${i.counterparty ? shortHex(i.counterparty) : '…'}${i.chain && i.chain !== 'tempo' ? ` on ${i.chain}` : ''}${i.deliveredUsd != null && i.deliveredUsd !== i.amountUsd ? ` (${usd(i.deliveredUsd)} arrived)` : ''}`;
+      return `Sent ${usd(i.amountUsd)} to ${i.counterparty ? shortHex(i.counterparty) : '…'}${i.chain && i.chain !== 'monad' ? ` on ${i.chain}` : ''}${i.deliveredUsd != null && i.deliveredUsd !== i.amountUsd ? ` (${usd(i.deliveredUsd)} arrived)` : ''}`;
     case 'to_ai_balance':
-      return `Locked ${usd(i.amountUsd)} for chats`;
+      return `Moved ${usd(i.amountUsd)} to AI balance`;
     case 'from_ai_balance':
       return `${usd(i.amountUsd)} returned to wallet${i.spentUsd != null ? ` (${usd(i.spentUsd)} spent on answers)` : ''}`;
+    case 'answers_settled':
+      return `${usd(i.amountUsd)} paid for answers`;
     default:
       return `${i.type} ${usd(i.amountUsd)}`;
   }
@@ -45,7 +47,7 @@ export function ActivityList() {
   return (
     <ul className="divide-y divide-line" aria-label="Wallet activity">
       {items.map((i) => {
-        const minor = i.type === 'to_ai_balance';
+        const minor = i.type === 'to_ai_balance' || i.type === 'answers_settled';
         const link = i.txHash ? txUrl(i.txHash) : null;
         return (
           <li key={i.id} className="flex items-center gap-3 py-2">
