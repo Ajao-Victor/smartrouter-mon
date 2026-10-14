@@ -15,7 +15,7 @@ vi.mock('../spendingKey', async () => {
   return {
     signWithSpendingKey: async (_address: string, typed: import('@/lib/api/types').TypedData) => {
       const k = await loadSpendingKey();
-      return k ? k.signTypedData({ domain: typed.domain as never, types: typed.types, primaryType: typed.primaryType, message: toSignable(typed) } as never) : null;
+      return k ? k.signTypedData({ domain: typed.domain as never, types: typed.types, primaryType: typed.primaryType, message: toSignable(typed) }) : null;
     },
   };
 });
