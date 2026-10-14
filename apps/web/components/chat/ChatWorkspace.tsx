@@ -234,8 +234,8 @@ export function ChatWorkspace({ chatId }: ChatWorkspaceProps) {
   /** FORBIDDEN: wallet belongs to another account / deposit from a different wallet → sign out and back in. */
   const reauth = async () => {
     await signOutEverywhere(logoutPrivy);
-    const { resetSession } = await import('@/lib/tempo/session');
-    resetSession();
+    const { resetPayments } = await import('@/lib/monad/payments');
+    resetPayments();
     useAuthStore.getState().signedOut();
     openSignIn();
   };
