@@ -4,16 +4,15 @@ import type { NextConfig } from 'next';
 
 /**
  * Content Security Policy — see security.md §4 and the handover ("Environments and config"). The
- * browser talks to the SmartRouter API, the public Tempo RPC (viem wallet client), Privy (sign-in
+ * browser talks to the SmartRouter API, the public Monad RPC (viem), Privy (sign-in
  * modal + embedded wallet iframe, Cloudflare Turnstile captcha) and Sentry. Provider MPP hosts never appear in this bundle
  * (`pnpm guard:hosts`). The API is called directly — never through a Vercel rewrite — so the
  * backend sees the real client IP and the `sr_session` cookie stays first-party.
  */
 const isDev = process.env.NODE_ENV !== 'production';
 
-const network = process.env.NEXT_PUBLIC_TEMPO_NETWORK === 'tempo' ? 'tempo' : 'moderato';
 const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? '').replace(/\/+$/, '');
-const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL ?? (network === 'tempo' ? 'https://rpc.tempo.xyz' : 'https://rpc.moderato.tempo.xyz');
+const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || 'https://rpc.monad.xyz';
 const sentryDsn = process.env.NEXT_PUBLIC_SENTRY_DSN ?? '';
 const objectStorageHost = process.env.NEXT_PUBLIC_OBJECT_STORAGE_HOST ?? '';
 
