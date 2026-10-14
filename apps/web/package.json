@@ -17,6 +17,7 @@
     "guard:hosts": "node scripts/guard-hosts.mjs"
   },
   "dependencies": {
+    "@aurora-is-near/intents-connect": "7.26.0",
     "@privy-io/react-auth": "3.48.1",
     "@react-three/drei": "^10.0.0",
     "@react-three/fiber": "^9.1.0",
