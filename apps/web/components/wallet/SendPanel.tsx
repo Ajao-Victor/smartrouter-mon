@@ -1,24 +1,24 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { ArrowLeft } from 'lucide-react';
 
 import { isApiError } from '@/lib/api/client';
-import type { SendCode, SendInput, SendQuote, Wallet, WalletChainOption } from '@/lib/api/types';
+import type { SendCode, SendInput, SendQuote, Wallet } from '@/lib/api/types';
 import { linkEmail } from '@/lib/auth/session';
+import { isAddress } from '@/lib/explorer';
 import { formatUsd } from '@/lib/money';
 
-import { useSend, useSendCode, useSendQuote, useWalletOptions } from '@/hooks/useWallet';
+import { useSend, useSendCode, useSendQuote } from '@/hooks/useWallet';
 
 import { CodeInput } from '@/components/wallet/CodeInput';
 
-const keyOf = (o: WalletChainOption) => `${o.chain}:${o.token}`;
 const RESEND_SECONDS = 30;
 const same = (a: SendInput, b: SendInput) => JSON.stringify(a) === JSON.stringify(b);
 const short = (to: string) => (to.length > 14 ? `${to.slice(0, 6)}…${to.slice(-4)}` : to);
 
-/** The emailed code for one exact send (chain, token, recipient, amount). */
+/** The emailed code for one exact send (recipient and amount). */
 interface Pending {
   input: SendInput;
   code: SendCode;
@@ -61,22 +61,19 @@ function AddEmail() {
 }
 
 /**
- * Send (Handover "Send", options from `GET /wallet/options` → `send[]`): pick a network, paste an
- * address, enter an amount → `POST /wallet/send/quote` shows what arrives, the bridge fee and the
- * time → Continue → one Tempo transaction signed with Privy, fee paid by SmartRouter (`/relay`).
- * Only when the backend requires it (`features.sendCode.required`), Continue first emails a 6-digit
- * code (`POST /wallet/send/code`) and the code screen runs before the signature.
+ * Send USDC on Monad (the only send the backend supports): paste an address, enter an amount →
+ * `POST /wallet/send/quote` shows what arrives → Continue → the Privy wallet signs one ERC-3009
+ * TransferWithAuthorization and SmartRouter's operator submits it, paying the MON gas. Only when
+ * the backend requires it (`features.sendCode.required`), Continue first emails a 6-digit code
+ * (`POST /wallet/send/code`) and the code screen runs before the signature.
  */
 export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: () => void; onDone: () => void }) {
-  const options = useWalletOptions();
-  const list = useMemo(() => (options.data?.send.length ? options.data.send : [{ chain: 'tempo', chainName: wallet.network?.name ?? 'Tempo', token: wallet.token.symbol, method: 'direct', vmType: 'evm', depositAvailable: true }]), [options.data, wallet]);
-  const [picked, setPicked] = useState<string>('tempo:' + wallet.token.symbol);
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
   const [quote, setQuote] = useState<{ input: SendInput; data: SendQuote } | null>(null);
   const quoteMut = useSendQuote();
   const codeMut = useSendCode();
-  const send = useSend();
+  const send = useSend(wallet.address);
   const [pending, setPending] = useState<Pending | null>(null);
   const [step, setStep] = useState<'form' | 'code'>('form');
   const [code, setCode] = useState('');
@@ -100,13 +97,15 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
     };
   }, [step]);
 
-  const option = list.find((o) => keyOf(o) === picked) ?? list[0];
   const amountUsd = Number(amount);
-  const input: SendInput | null = option && to.trim() && amountUsd > 0 ? { chain: option.chain, token: option.chain === 'tempo' ? 'USDC' : option.token, to: to.trim(), amountUsd } : null;
+  const recipient = to.trim();
+  const badAddress = recipient.length > 0 && !isAddress(recipient);
+  const ownAddress = isAddress(recipient) && recipient.toLowerCase() === wallet.address.toLowerCase();
+  const input: SendInput | null = isAddress(recipient) && !ownAddress && amountUsd > 0 ? { chain: 'monad', token: 'USDC', to: recipient, amountUsd } : null;
   const quoteFresh = quote && input && JSON.stringify(quote.input) === JSON.stringify(input);
   const tooMuch = amountUsd * 1_000_000 > wallet.main.balanceUsd;
 
-  // A changed amount, token or recipient needs a new code: drop the old error with it.
+  // A changed amount or recipient needs a new code: drop the old error with it.
   const inputKey = input ? JSON.stringify(input) : '';
   useEffect(() => {
     setCodeError((e: unknown) => (isApiError(e) && e.code === 'EMAIL_REQUIRED' ? e : null));
@@ -248,7 +247,7 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
             return;
           }
           if (!codeRequired) {
-            // No email code: POST /wallet/send → sign send.calls (fee paid via /relay) → /submitted.
+            // No email code: POST /wallet/send → sign the transfer authorization → /send/:id/sign.
             send.mutate(input, { onSuccess: onDone });
             return;
           }
@@ -261,22 +260,9 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
           requestCode(input);
         }}
       >
-        <label className="block space-y-1 text-sm">
-          <span className="text-text-1">Network</span>
-          <select
-            value={picked}
-            onChange={(e) => {
-              setPicked(e.target.value);
-            }}
-            className="h-10 w-full rounded-lg bg-bg-1 px-3 text-text-0 shadow-hairline outline-none"
-          >
-            {list.map((o) => (
-              <option key={keyOf(o)} value={keyOf(o)}>
-                {o.chain === 'tempo' ? `${wallet.token.symbol} on ${o.chainName || 'Tempo'}` : `${o.token} on ${o.chainName || o.chain}`}
-              </option>
-            ))}
-          </select>
-        </label>
+        <p className="text-sm text-text-1">
+          {wallet.token.symbol} on {wallet.network?.name ?? 'Monad'}
+        </p>
         <label className="block space-y-1 text-sm">
           <span className="text-text-1">To address</span>
           <input
@@ -284,7 +270,7 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
             onChange={(e) => {
               setTo(e.target.value);
             }}
-            placeholder={option?.vmType === 'svm' ? 'Solana address' : '0x…'}
+            placeholder="0x… (a Monad address)"
             className="num h-10 w-full rounded-lg bg-bg-1 px-3 text-text-0 shadow-hairline outline-none placeholder:text-text-2"
           />
         </label>
@@ -326,10 +312,6 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
               </dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-text-2">Bridge fee</dt>
-              <dd className="num text-text-0">${quote.data.bridgeFeeUsd.toFixed(2)}</dd>
-            </div>
-            <div className="flex justify-between">
               <dt className="text-text-2">Network fee</dt>
               <dd className="text-free">Paid by SmartRouter</dd>
             </div>
@@ -341,6 +323,8 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
             )}
           </dl>
         )}
+        {badAddress && <p className="text-sm text-signal">Enter a valid Monad address (0x… with 40 hex characters).</p>}
+        {ownAddress && <p className="text-sm text-signal">That&apos;s your own address.</p>}
         {tooMuch && <p className="text-sm text-signal">That&apos;s more than your balance.</p>}
         {quoteMut.isError && <p className="text-sm text-signal">{isApiError(quoteMut.error) ? quoteMut.error.message : 'Could not get a quote.'}</p>}
         {noEmail || (isApiError(codeError) && codeError.code === 'EMAIL_REQUIRED') ? (
@@ -360,7 +344,7 @@ export function SendPanel({ wallet, onBack, onDone }: { wallet: Wallet; onBack: 
           {send.isPending ? 'Sending…' : codeMut.isPending ? 'Emailing your code…' : quoteMut.isPending ? 'Getting a quote…' : quoteFresh ? 'Continue' : 'Review'}
         </button>
         <p className="text-xs text-text-2">
-          {codeRequired ? 'An emailed code, then one signature.' : 'One signature.'} SmartRouter pays the Tempo network fee; you only pay the bridge fee for other chains, shown above.
+          {codeRequired ? 'An emailed code, then one signature.' : 'One signature.'} SmartRouter pays the Monad network fee, so you need no MON.
         </p>
       </form>
     </div>
