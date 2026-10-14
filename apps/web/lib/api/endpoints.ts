@@ -1,6 +1,6 @@
 /**
- * Typed endpoint functions — every route from "SmartRouter Frontend Architecture"
- * (Screens and the endpoints each uses; Wallet and sign-in; Paying for runs).
+ * Typed endpoint functions — every route of SmartRouter on Monad (Monad handoff, and the
+ * backend routes it cites: auth, wallet, run, ledger).
  */
 import { apiFetch } from '@/lib/api/client';
 import {
@@ -17,13 +17,15 @@ import {
   requestListSchema,
   requestSchema,
   privySignInSchema,
-  depositAddressSchema,
+  depositAuthorizationSchema,
+  depositResultSchema,
+  relayedTxSchema,
   sendCodeSchema,
   sendPlanSchema,
   sendQuoteSchema,
   sessionsCurrentSchema,
   settingsSchema,
-  spendingKeySchema,
+  setupRequestSchema,
   walletActivitySchema,
   walletOptionsSchema,
   walletSchema,
@@ -54,7 +56,7 @@ export const auth = {
 export const me = {
   /** `GET /me` → `{ id, address, email, loginMethod, usage, settings }`. */
   get: (signal?: AbortSignal) => apiFetch('/me', { schema: userSchema, ...sig(signal) }),
-  /** `PATCH /me/settings { slider?, allocationUsd?, weeklyLimitUsd?, autoFreeFallback?, country? }` → updated settings. */
+  /** `PATCH /me/settings { slider?, dailyLimitUsd?, weeklyLimitUsd?, autoFreeFallback?, country? }` → settings (+ `vaultSetupNeeded`). */
   updateSettings: (patch: SettingsPatch) => apiFetch('/me/settings', { method: 'PATCH', body: patch, schema: settingsSchema }),
 };
 
@@ -87,7 +89,7 @@ export const chats = {
 };
 
 export const sessions = {
-  /** `GET /sessions/current` → `paidRunsEnabled`, `network`, `suggestedDepositUsd`, `usage`, `session`. */
+  /** `GET /sessions/current` → `paidRunsEnabled`, `network` (vault, ledger, explorer), `suggestedDepositUsd`, `usage`, `session` (AI balance, `nextVoucherBaseMicro`). */
   current: (signal?: AbortSignal) => apiFetch('/sessions/current', { schema: sessionsCurrentSchema, ...sig(signal) }),
 };
 
@@ -113,9 +115,9 @@ export function pollPath(pollUrl: string): string {
 }
 
 export const feedback = {
-  /** `POST /feedback { requestId, rating: 1 | -1 }`. */
+  /** `POST /feedback { requestId, rating: 1 | -1, signature? }` (signature: EIP-712 Rating by the spending key). */
   rate: (input: FeedbackInput) => apiFetch('/feedback', { method: 'POST', body: input }),
-  /** `POST /compare/vote { compareGroup, winnerRequestId, prompt }`. */
+  /** `POST /compare/vote { compareGroup, winnerRequestId, prompt, signature? }` (EIP-712 Vote by the spending key). */
   compareVote: (input: CompareVoteInput) => apiFetch('/compare/vote', { method: 'POST', body: input }),
 };
 
@@ -124,32 +126,58 @@ export const waitlist = {
   join: (input: WaitlistInput) => apiFetch('/waitlist', { method: 'POST', body: input }),
 };
 
-/** `POST /run` lives in `lib/api/sse.ts` (SSE reader over fetch / the mppx session manager). */
+/** `POST /run` lives in `lib/api/sse.ts` (SSE reader; paid runs answer the 402 voucher challenge in `lib/monad/payments.ts`). */
 export const RUN_PATH = '/run';
 
-/** Wallet (Handover "Wallet"): one balance, spending caps, Deposit, Send, activity. All need sign-in. */
+/**
+ * Wallet on Monad (Monad handoff §5): balances, the AI balance in SmartRouterVault, the spending-key
+ * setup, gasless deposits and sends, activity. Every on-chain action is a signature the backend
+ * operator relays, so the user needs no MON. All need sign-in.
+ */
 export const wallet = {
-  /** `GET /wallet` — balance, locked, caps, spending key, features. */
+  /** `GET /wallet` — main USDC balance, AI balance, caps, spending key, features. */
   get: (signal?: AbortSignal) => apiFetch('/wallet', { schema: walletSchema, ...sig(signal) }),
   /** `GET /wallet/options` → `deposit[]`, `send[]`, `card`. */
   options: (signal?: AbortSignal) => apiFetch('/wallet/options', { schema: walletOptionsSchema, ...sig(signal) }),
-  /** `POST /wallet/deposit-address { chain, token?, refundAddress? }`. */
-  depositAddress: (input: { chain: string; token?: string; refundAddress?: string }) => apiFetch('/wallet/deposit-address', { method: 'POST', body: input, schema: depositAddressSchema }),
-  /** `POST /wallet/send/quote { chain, token, to, amountUsd }`. */
+  /** `GET /wallet/setup?signer=&dailyUsd=&weeklyUsd=` → Setup typed data for the Privy wallet to sign. */
+  setupRequest: (input: { signer: string; dailyUsd?: number; weeklyUsd?: number }) => {
+    const q = new URLSearchParams({ signer: input.signer });
+    if (input.dailyUsd !== undefined) q.set('dailyUsd', String(input.dailyUsd));
+    if (input.weeklyUsd !== undefined) q.set('weeklyUsd', String(input.weeklyUsd));
+    return apiFetch(`/wallet/setup?${q.toString()}`, { schema: setupRequestSchema });
+  },
+  /** `POST /wallet/setup { ...message, signature }` → the operator relays `vault.setupFor`. */
+  setup: (input: Record<string, string>) => apiFetch('/wallet/setup', { method: 'POST', body: input, schema: relayedTxSchema }),
+  /** `POST /wallet/deposit/authorization { amountUsd }` → ReceiveWithAuthorization for Circle USDC. */
+  depositAuthorization: (amountUsd: number) => apiFetch('/wallet/deposit/authorization', { method: 'POST', body: { amountUsd }, schema: depositAuthorizationSchema }),
+  /** `POST /wallet/deposit { ...message, signature }` → the operator relays `vault.depositWithAuthorization`. */
+  deposit: (input: Record<string, string>) => apiFetch('/wallet/deposit', { method: 'POST', body: input, schema: depositResultSchema }),
+  /** `POST /wallet/send/quote { chain: 'monad', token: 'USDC', to, amountUsd }`. */
   sendQuote: (input: SendInput) => apiFetch('/wallet/send/quote', { method: 'POST', body: input, schema: sendQuoteSchema }),
   /** `POST /wallet/send/code { chain, token, to, amountUsd }` → emails a 6-digit code for this send. */
   sendCode: (input: SendInput) => apiFetch('/wallet/send/code', { method: 'POST', body: input, schema: sendCodeSchema }),
-  /** `POST /wallet/send { chain, token, to, amountUsd, verificationId?, code? }` → `{ sendId, calls, feePayer: true }`. */
+  /** `POST /wallet/send { chain, token, to, amountUsd, verificationId?, code? }` → `{ sendId, typedData }` (TransferWithAuthorization). */
   send: (input: SendRequest) => apiFetch('/wallet/send', { method: 'POST', body: input, schema: sendPlanSchema }),
-  /** `POST /wallet/send/:id/submitted { txHash }`. */
-  submitted: (sendId: string, txHash: string) => apiFetch<{ status: string }>(`/wallet/send/${encodeURIComponent(sendId)}/submitted`, { method: 'POST', body: { txHash } }),
+  /** `POST /wallet/send/:id/sign { signature }` → the operator relays the transfer. */
+  signSend: (sendId: string, signature: string) => apiFetch(`/wallet/send/${encodeURIComponent(sendId)}/sign`, { method: 'POST', body: { signature }, schema: relayedTxSchema }),
   /** `GET /wallet/activity?limit=30&before=<at>`. */
   activity: (before?: string | null, signal?: AbortSignal) =>
     apiFetch(`/wallet/activity?limit=30${before ? `&before=${encodeURIComponent(before)}` : ''}`, { schema: walletActivitySchema, ...sig(signal) }),
-  /** `POST /wallet/spending-key { accessKeyAddress }` → its on-chain state. */
-  spendingKey: (accessKeyAddress: string) => apiFetch('/wallet/spending-key', { method: 'POST', body: { accessKeyAddress }, schema: spendingKeySchema }),
-  /** `POST /wallet/locked/return` → `{ returnedUsd }` (instant return of locked money). */
-  returnLocked: () => apiFetch<{ returnedUsd: number; skipped?: string[] }>('/wallet/locked/return', { method: 'POST', body: {} }),
+  /** `POST /wallet/locked/return` → `{ returnedUsd }`: the AI balance goes back to the wallet now. */
+  returnLocked: () => apiFetch<{ returnedUsd: number; settledUsd?: number; txHash?: string | null; skipped?: string[] }>('/wallet/locked/return', { method: 'POST', body: {} }),
+};
+
+/** Public on-chain side (SmartRouterLedger): leaderboard and the router's decision log. */
+export const ledger = {
+  /** `GET /leaderboard?taskType=` — models ranked by delivered answers, thumbs and Compare wins. */
+  leaderboard: (taskType?: TaskType, signal?: AbortSignal) =>
+    apiFetch<{ taskType: TaskType | null; source: string; ledger: string | null; models: { modelId: string; label: string; taskType: string; delivered: number; failed: number; up: number; down: number; compareWins: number; compareLosses: number; score: number }[] }>(
+      taskType ? `/leaderboard?taskType=${encodeURIComponent(taskType)}` : '/leaderboard',
+      sig(signal),
+    ),
+  /** `GET /requests/:id/route` — why the router picked this model; `verified` = its hash matches the on-chain receipt. */
+  route: (requestId: string, signal?: AbortSignal) =>
+    apiFetch<{ requestId: string; routeHash: string | null; log: unknown; verified: boolean; ledgerTx: string | null; explorerUrl: string | null }>(`/requests/${encodeURIComponent(requestId)}/route`, sig(signal)),
 };
 
 /**
@@ -165,5 +193,5 @@ const uploads = {
   remove: (uploadId: string) => apiFetch<{ ok: boolean }>(`/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
 };
 
-export const api = { auth, me, catalog, chats, sessions, requests, feedback, waitlist, wallet, uploads };
+export const api = { auth, me, catalog, chats, sessions, requests, feedback, waitlist, wallet, ledger, uploads };
 export type Api = typeof api;
