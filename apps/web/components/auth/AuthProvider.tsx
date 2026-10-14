@@ -4,20 +4,33 @@ import { useCallback, useEffect, useRef } from 'react';
 
 import { getIdentityToken, PrivyProvider, useFundWallet, useIdentityToken, useLinkAccount, useLogin, useLogout, usePrivy, useUser, useWallets, type PrivyClientConfig } from '@privy-io/react-auth';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { base } from 'viem/chains';
 
 import { isApiError, isOfflineError } from '@/lib/api/client';
+import { api } from '@/lib/api/endpoints';
 import { apiUnreachableHint } from '@/lib/api/errors';
 import { queryKeys } from '@/lib/api/keys';
 import type { PrivySignIn } from '@/lib/api/types';
 import { clearSessionToken, getSessionToken, registerAuthBridge, subscribeSessionToken } from '@/lib/auth/session';
 import { exchangeIdentityToken, isWrongAccount } from '@/lib/auth/signIn';
 import { env } from '@/lib/env';
-import { chain } from '@/lib/tempo/chain';
-import { registerPrivyWallets } from '@/lib/tempo/privyWallet';
+import { chain } from '@/lib/monad/chain';
+import { sameAddress } from '@/lib/monad/contracts';
+import { registerPrivyWallets } from '@/lib/monad/privyWallet';
 
 import { useAuthStore } from '@/stores/authStore';
 import { toast } from '@/stores/toastStore';
+
+/**
+ * Monad handoff §4, "Successful login": `GET /me` answers with the new token and reports Monad
+ * (chain 143). A mismatch means the API and this build disagree about the network.
+ */
+async function verifySession(): Promise<void> {
+  const me = await api.me.get();
+  if (me.network && me.network.chainId !== env.chainId) {
+    console.error('[SmartRouter] API network mismatch', me.network);
+    toast.warn(`SmartRouter is on chain ${String(me.network.chainId)}, this app expects ${String(env.chainId)}`, 'Payments are paused until they match.');
+  }
+}
 
 /** Sign-in done: mark signed in, refetch everything as the user, then send any kept message. */
 function onSignedIn(res: PrivySignIn, qc: QueryClient): void {
@@ -48,18 +61,20 @@ function useTokenStatus(): void {
 }
 
 /**
- * Inside `PrivyProvider`: turns Privy's authenticated state into a SmartRouter session
- * (Handover "Sign-in flow") and exposes the modal, logout and the embedded wallet to the rest of
- * the app, which never imports Privy directly.
+ * Inside `PrivyProvider`: turns Privy's authenticated state into a SmartRouter session (Monad
+ * handoff §3–4) and exposes the modal, logout and the embedded wallet to the rest of the app,
+ * which never imports Privy directly. Nothing is exchanged until Privy **and** its wallet list are
+ * ready; the identity token (not the access token) goes to `POST /auth/privy`, with an in-flight
+ * guard against React Strict Mode double effects.
  */
 function PrivyBridge() {
   const qc = useQueryClient();
   const { ready, authenticated } = usePrivy();
   const { identityToken } = useIdentityToken();
   const { refreshUser } = useUser();
-  const { wallets } = useWallets();
+  const { ready: walletsReady, wallets } = useWallets();
   const { logout } = useLogout();
-  // Card deposits (Handover "Deposit → Card"): Privy's checkout, Base USDC to the deposit address.
+  // Card deposits: Privy's funding flow buys USDC on Monad straight into the user's wallet.
   // eslint-disable-next-line @typescript-eslint/no-deprecated
   const { fundWallet } = useFundWallet();
   useTokenStatus();
@@ -70,7 +85,11 @@ function PrivyBridge() {
   authenticatedRef.current = authenticated;
   const walletsRef = useRef(wallets);
   walletsRef.current = wallets;
+  const walletsReadyRef = useRef(walletsReady);
+  walletsReadyRef.current = walletsReady;
   const busy = useRef(false);
+  /** Login finished before the wallet list was ready: exchange once it is. */
+  const pending = useRef(false);
 
   /** Steps 2–5: identity token → `POST /auth/privy` → keep the session token. */
   const exchange = useCallback(async () => {
@@ -87,7 +106,14 @@ function PrivyBridge() {
         }
         return (await getIdentityToken()) ?? identityRef.current;
       });
+      // §3: signatures must come from the embedded wallet whose address the backend returned.
+      if (!walletsRef.current.some((w) => w.walletClientType === 'privy' && sameAddress(w.address, res.address))) {
+        console.warn('[SmartRouter] no Privy embedded wallet matches the SmartRouter address yet', res.address);
+      }
       onSignedIn(res, qc);
+      await verifySession().catch((err: unknown) => {
+        console.error('[SmartRouter] /me after sign-in failed', err);
+      });
     } catch (err) {
       if (isWrongAccount(err)) {
         // 403 "This wallet belongs to another account": show the message and sign out of Privy.
@@ -112,7 +138,9 @@ function PrivyBridge() {
 
   const { login } = useLogin({
     onComplete: ({ wasAlreadyAuthenticated }) => {
-      if (!wasAlreadyAuthenticated || !getSessionToken()) void exchange();
+      if (wasAlreadyAuthenticated && getSessionToken()) return;
+      if (walletsReadyRef.current) void exchange();
+      else pending.current = true;
     },
     onError: (code) => {
       useAuthStore.getState().setAfterSignIn(null);
@@ -123,21 +151,26 @@ function PrivyBridge() {
     },
   });
 
-  // Privy says signed in but we hold no SmartRouter token (first load after login, or a 401
-  // dropped it): exchange silently.
+  // Privy says signed in but we hold no SmartRouter token (first load after login, a login that
+  // finished before the wallets were ready, or a 401 that dropped it): exchange silently.
   useEffect(() => {
-    if (ready && authenticated && !getSessionToken()) void exchange();
-  }, [ready, authenticated, exchange]);
+    if (!ready || !walletsReady || !authenticated) return;
+    if (pending.current || !getSessionToken()) {
+      pending.current = false;
+      void exchange();
+    }
+  }, [ready, walletsReady, authenticated, exchange]);
 
   useEffect(() => {
     registerAuthBridge({
       openSignIn: () => {
-        if (authenticatedRef.current) void exchange();
-        else login();
+        if (!authenticatedRef.current) login();
+        else if (walletsReadyRef.current) void exchange();
+        else pending.current = true;
       },
       logoutPrivy: () => logout(),
       fundWallet: async ({ address, amountUsd }) => {
-        await fundWallet({ address, options: { chain: base, asset: 'USDC', amount: amountUsd.toFixed(2) } as never });
+        await fundWallet({ address, options: { chain, asset: 'USDC', amount: amountUsd.toFixed(2) } as never });
       },
       linkEmail,
     });
@@ -174,13 +207,14 @@ function MockBridge() {
   return null;
 }
 
-/** The Tempo chain for this environment, in Privy's chain shape (viem chains are compatible at runtime). */
+/** Monad (chain 143) in Privy's chain shape (viem chains are compatible at runtime). */
 const privyChain = chain as unknown as NonNullable<PrivyClientConfig['defaultChain']>;
 
 /**
- * Handover "Sign-in flow", step 1: `PrivyProvider` with email and Google, the Tempo chain for this
- * environment, and an embedded wallet created on login with the wallet UIs hidden (silent
- * vouchers). Apple sign-in is not set up in Privy yet — add `'apple'` to `loginMethods` once it is.
+ * Monad handoff §3: `PrivyProvider` with email and Google, Monad as the default and only supported
+ * chain, and an embedded Ethereum wallet created on login for users without one (wallet UIs hidden:
+ * setup and USDC authorizations are typed-data signatures). Apple sign-in is not set up in Privy —
+ * add `'apple'` to `loginMethods` once it is.
  */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   if (env.mock) {
