@@ -18,7 +18,6 @@ export type ApiErrorCode =
   | 'PAYMENT_FAILED'
   | 'SPENDING_KEY_MISSING'
   | 'INSUFFICIENT_FUNDS'
-  | 'SESSION_BUSY'
   | 'UNKNOWN';
 
 export class ApiError extends Error {
