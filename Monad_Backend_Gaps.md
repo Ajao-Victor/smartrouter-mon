@@ -45,8 +45,7 @@ Items are ordered from blocking to nice-to-have.
 
 ## 5. Ratings and ledger
 
-14. **Rating and Vote signatures are optional.** The frontend signs a Rating with the spending key when one exists in the browser. It only signs a Vote when the losing request is known, and the current UI only sends the winner. Please confirm unsigned ratings and votes stay accepted, and whether you want the frontend to always sign.
-15. **`GET /leaderboard` and `GET /requests/:id/route`** now have typed endpoints in `lib/api/endpoints.ts`. No screen uses them yet. Tell us if they belong in the demo.
+14. `Monad.docx` doesn't cover signed ratings, votes, `GET /leaderboard` or `GET /requests/:id/route`, so the frontend doesn't implement them. Ratings and votes are sent unsigned, as before. Tell us if they're needed.
 
 ## 6. Confirmations (no change needed unless you say so)
 
