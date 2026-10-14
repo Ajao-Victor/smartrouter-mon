@@ -7,7 +7,7 @@ import { useAllocationStore } from '@/stores/allocationStore';
 import { selectAnyStreaming, useStreamStore } from '@/stores/streamStore';
 
 /**
- * Screen-reader announcements: "Streaming…", "Done — {model}", "Allocation used". A single
+ * Screen-reader announcements: "Streaming…", "Done — {model}", "AI balance used". A single
  * polite live region, updated only on state transitions.
  */
 export function LiveRegion() {
@@ -26,7 +26,7 @@ export function LiveRegion() {
   }, [streaming, model]);
 
   useEffect(() => {
-    if (status === 'used') setMessage('Allocation used — Top up');
+    if (status === 'used') setMessage('AI balance used — Top up');
   }, [status]);
 
   return (
