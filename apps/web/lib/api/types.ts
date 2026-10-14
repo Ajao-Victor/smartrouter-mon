@@ -339,7 +339,33 @@ export const walletChainOptionSchema = z
   .passthrough();
 export type WalletChainOption = z.output<typeof walletChainOptionSchema>;
 
-/** `GET /wallet/options` → `deposit[]` (Monad direct, Aurora chains), `send[]`, `card` (Privy on Monad). */
+/**
+ * `GET /wallet/options` → `aurora`: the Aurora Intents Connect bridge-in recipe (no secrets). The
+ * SDK builds it with these exact steps — `USDC.approve(vault, {MIN_AMOUNT_OUT})` then
+ * `vault.depositFor(user, {MIN_AMOUNT_OUT})` — and sends create calls through `POST /aurora/*`,
+ * which adds SmartRouter's API key and rejects any other steps.
+ */
+export const auroraStepSchema = z.object({
+  to: z.string(),
+  functionSignature: z.string(),
+  parameters: z.array(z.string()),
+  value: z.string().default('0'),
+});
+export const auroraRecipeSchema = z.object({
+  available: z.boolean(),
+  baseUrl: z.string().nullish().transform((v) => v ?? null),
+  apiKeyProxyPath: z.string().default('/aurora/'),
+  flow: z.literal('bridge-in'),
+  type: z.literal('evm'),
+  destination: z.object({ chain: z.string(), chainId: z.number().nullish(), assetId: z.string(), tokenAddress: z.string() }),
+  steps: z.array(auroraStepSchema),
+  chains: z.array(z.object({ chain: z.string(), name: z.string() })).default([]),
+  metadata: z.object({ title: z.string(), intent: z.string() }),
+  note: z.string().default(''),
+});
+export type AuroraRecipe = z.output<typeof auroraRecipeSchema>;
+
+/** `GET /wallet/options` → `deposit[]` (Monad direct, Aurora chains), `send[]`, `card` (Privy on Monad), `aurora`. */
 export const walletOptionsSchema = z.object({
   deposit: z.array(walletChainOptionSchema).default([]),
   send: z.array(walletChainOptionSchema).default([]),
@@ -347,6 +373,10 @@ export const walletOptionsSchema = z.object({
     .object({ chain: z.string(), chainId: z.number().nullish(), token: z.string(), tokenAddress: z.string().nullish(), note: z.string().default('') })
     .passthrough()
     .nullish()
+    .transform((v) => v ?? null),
+  aurora: auroraRecipeSchema
+    .nullish()
+    .catch(null)
     .transform((v) => v ?? null),
 });
 export type WalletOptions = z.output<typeof walletOptionsSchema>;
