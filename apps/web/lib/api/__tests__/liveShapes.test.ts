@@ -1,6 +1,9 @@
 /**
- * Payloads captured from the live testnet API (smartrouter-testnet, 11 Oct 2026) parsed with the
- * frontend schemas. If the backend changes a shape, this is the test that should fail first.
+ * Payloads from the live API parsed with the frontend schemas. Public routes (catalogue, recommend)
+ * were captured from smartrouter-testnet on 11 Oct 2026 and are unchanged on smartrouter-mon;
+ * signed-in Monad payloads (`/sessions/current`, settings) follow the Monad backend routes
+ * (`apps/api/src/routes/run.ts`, `auth.ts`). If the backend changes a shape, this is the test that
+ * should fail first.
  */
 import {
   catalogSchema,
@@ -42,29 +45,31 @@ describe('live API shapes', () => {
   });
 
   it('PATCH /me/settings answers with the settings only', () => {
-    expect(settingsSchema.parse({ slider: 'balanced', dailyLimitUsd: 3, weeklyLimitUsd: 10, autoFreeFallback: true, country: null, spendingKeyLimitUsd: 4 }).dailyLimitUsd).toBe(3_000_000);
+    expect(settingsSchema.parse({ slider: 'balanced', dailyLimitUsd: 3, weeklyLimitUsd: 10, autoFreeFallback: true, country: null, vaultSetupNeeded: true }).dailyLimitUsd).toBe(3_000_000);
   });
 
   it('GET /sessions/current with and without a session', () => {
     const none = sessionsCurrentSchema.parse({
       paidRunsEnabled: true,
-      network: { chainId: 42431, token: '0x20c0000000000000000000000000000000000000', recipient: '0xD564', operator: '0x1D41' },
+      network: { chainId: 143, name: 'Monad', token: '0x754704bc059f8c67012fed69bc8a327a5aafb603', vault: '0x88191be828c5ce6bda1c7796fb32450a10c3e54c', ledger: '0xdc28d25a044da278ae82cbf91cdf1c5997aa2163', operator: '0x61eB118FDb951cD9982a7fc6fA4132a31cF9c1a3', explorer: 'https://monadscan.com' },
       suggestedDepositUsd: 3,
       usage: { weekly: { spentUsd: 0, limitUsd: 10, usedPct: 0 }, deposit: null, alert: null },
       session: null,
     });
     expect(none.session).toBeNull();
     expect(none.suggestedDepositUsd).toBe(3_000_000);
-    expect(none.network?.token).toBe('0x20c0000000000000000000000000000000000000');
+    expect(none.network?.token).toBe('0x754704bc059f8c67012fed69bc8a327a5aafb603');
+    expect(none.network?.vault).toBe('0x88191be828c5ce6bda1c7796fb32450a10c3e54c');
     const open = sessionsCurrentSchema.parse({
       paidRunsEnabled: true,
-      network: { chainId: 42431, token: '0x20c0', recipient: '0xD564', operator: '0x1D41' },
+      network: { chainId: 143, name: 'Monad', token: '0x754704bc059f8c67012fed69bc8a327a5aafb603', vault: '0x88191be828c5ce6bda1c7796fb32450a10c3e54c', ledger: null, operator: '0x61eB118FDb951cD9982a7fc6fA4132a31cF9c1a3', explorer: 'https://monadscan.com' },
       suggestedDepositUsd: 2,
       usage: { weekly: { spentUsd: 0.0018, limitUsd: 10, usedPct: 0 }, deposit: DEPOSIT, alert: null },
-      session: { channelId: '0x490b', depositUsd: 2, spentUsd: 0.0018, remainingUsd: 1.9982, settledUsd: 0, requests: 1, openedAt: '2026-10-11T15:48:25.720Z', lastUsedAt: '2026-10-11T15:48:26.175Z' },
+      session: { channelId: '0x490b', depositUsd: 2, spentUsd: 0.0018, remainingUsd: 1.9982, settledUsd: 0, deliveredUsd: 0.0018, nextVoucherBaseMicro: '1800', setupDone: true, signer: '0x00000000000000000000000000000000000000b2', signerExpiresAt: '2026-10-21T00:00:00.000Z', withdrawRequestedUntil: null, lastSettleTx: null, lastUsedAt: '2026-10-11T15:48:26.175Z' },
     });
     expect(open.session?.remainingUsd).toBe(1_998_200);
-    expect(open.session?.requests).toBe(1);
+    expect(open.session?.nextVoucherBaseMicro).toBe('1800');
+    expect(open.session?.setupDone).toBe(true);
   });
 
   it('GET /catalog (priceEstimateUsd, quality per task, medianLatencyMs)', () => {
