@@ -811,8 +811,6 @@ export type RequestList = z.output<typeof requestListSchema>;
 export interface FeedbackInput {
   requestId: string;
   rating: 1 | -1;
-  /** EIP-712 Rating signed by the spending key: recorded on SmartRouterLedger. */
-  signature?: string;
 }
 
 /** `POST /compare/vote { compareGroup, winnerRequestId, prompt }`. */
@@ -820,8 +818,6 @@ export interface CompareVoteInput {
   compareGroup: string;
   winnerRequestId: string;
   prompt: string;
-  /** EIP-712 Vote signed by the spending key: recorded on SmartRouterLedger. */
-  signature?: string;
 }
 
 /* ---------------------------------- waitlist ----------------------------------- */
