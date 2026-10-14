@@ -1,53 +1,57 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { clsx } from 'clsx';
-import { ArrowLeft, CreditCard } from 'lucide-react';
+import { ArrowLeft, CreditCard, Sparkles } from 'lucide-react';
 
-import { isApiError } from '@/lib/api/client';
-import type { Wallet, WalletChainOption } from '@/lib/api/types';
+import type { Wallet } from '@/lib/api/types';
 import { fundWithCard } from '@/lib/auth/session';
-import { isTestnet } from '@/lib/env';
+import { formatUsd, micro } from '@/lib/money';
 
-import { useDepositAddress, useWalletOptions } from '@/hooks/useWallet';
+import { useDepositToAi, useWalletOptions } from '@/hooks/useWallet';
+import { useAllocationStore } from '@/stores/allocationStore';
 import { toast } from '@/stores/toastStore';
 
 import { CopyAddress } from '@/components/wallet/CopyAddress';
 import { QrCode } from '@/components/wallet/QrCode';
 
-type Tab = 'tempo' | 'chain' | 'card';
+type Tab = 'monad' | 'card';
 
-const keyOf = (o: WalletChainOption) => `${o.chain}:${o.token}`;
+const usd = (micro: number) => micro / 1_000_000;
 
 /**
- * Deposit (Handover "Deposit", options from `GET /wallet/options` → `deposit[]`):
- * - Tempo: the main wallet address and its QR code; arrives instantly.
- * - Other chain: a personal deposit address on that chain (`POST /wallet/deposit-address`) with its
- *   note; arrives as USDC.e minus the bridge fee.
- * - Card: Privy's card checkout to the Base USDC deposit address.
+ * Deposit on Monad (Monad handoff §5.4, `GET /wallet/options`):
+ *
+ * 1. Get Circle USDC on Monad into the wallet — send it to the wallet address (QR code), or buy it
+ *    by card through Privy (it lands in the same wallet).
+ * 2. Move it into the AI balance — one Privy signature (ERC-3009 ReceiveWithAuthorization) that
+ *    SmartRouter relays into the vault, paying the MON gas.
+ *
  * While open, `GET /wallet` is refreshed every 10 s and "Funds arrived" shows when the balance goes up.
- * Testnet: only the Tempo tab exists.
  */
 export function DepositPanel({ wallet, onBack, arrived }: { wallet: Wallet; onBack: () => void; arrived: boolean }) {
   const options = useWalletOptions();
-  const bridges = useMemo(() => (options.data?.deposit ?? []).filter((o) => o.method === 'bridge' && o.depositAvailable), [options.data]);
-  const crossChain = wallet.features.crossChain && bridges.length > 0;
-  const card = wallet.features.card && options.data?.card;
-  const [tab, setTab] = useState<Tab>('tempo');
-  const [picked, setPicked] = useState<string | null>(null);
-  const [refund, setRefund] = useState('');
+  const card = wallet.features.card ? options.data?.card : null;
+  const suggested = useAllocationStore((s) => s.suggestedDepositUsd);
+  const deposit = useDepositToAi();
+  const [tab, setTab] = useState<Tab>('monad');
   const [cardAmount, setCardAmount] = useState('20');
   const [cardBusy, setCardBusy] = useState(false);
 
-  const option = bridges.find((o) => keyOf(o) === picked) ?? null;
-  const needsRefund = option?.vmType === 'svm' || option?.chain === 'solana';
-  const addr = useDepositAddress(tab === 'chain' && option ? option.chain : null, option?.token ?? null, needsRefund && refund ? refund : undefined);
-  const baseAddr = useDepositAddress(tab === 'card' ? 'base' : null, tab === 'card' ? 'USDC' : null);
+  const main = wallet.main.balanceUsd;
+  const [moveAmount, setMoveAmount] = useState('');
+  // Prefill: the suggested top-up, never more than what the wallet holds.
+  useEffect(() => {
+    if (moveAmount !== '' || main <= 0) return;
+    const pick = Math.min(main, suggested > 0 ? suggested : main);
+    setMoveAmount(usd(pick).toFixed(2));
+  }, [main, suggested, moveAmount]);
+  const moveUsd = Number(moveAmount);
+  const moveTooMuch = moveUsd * 1_000_000 > main;
 
   const tabs: { id: Tab; label: string; show: boolean }[] = [
-    { id: 'tempo', label: 'Tempo', show: true },
-    { id: 'chain', label: 'Other chain', show: crossChain },
+    { id: 'monad', label: 'Monad', show: true },
     { id: 'card', label: 'Card', show: Boolean(card) },
   ];
 
@@ -62,6 +66,66 @@ export function DepositPanel({ wallet, onBack, arrived }: { wallet: Wallet; onBa
           Funds arrived.
         </p>
       )}
+
+      {/* Step 2 first when there's something to move: that's what unlocks paid answers. */}
+      <section className="space-y-3 rounded-xl bg-bg-1 p-4 shadow-hairline" aria-label="Move to AI balance">
+        <div className="flex items-start gap-2">
+          <Sparkles size={16} className="mt-0.5 shrink-0 text-accent-2" aria-hidden="true" />
+          <div>
+            <p className="text-sm text-text-0">Move USDC to your AI balance</p>
+            <p className="text-xs text-text-2">
+              Wallet <span className="num text-text-1">{formatUsd(main)}</span> · AI balance <span className="num text-text-1">{formatUsd(wallet.ai?.remainingUsd ?? micro(0))}</span>
+            </p>
+          </div>
+        </div>
+        {main > 0 ? (
+          <form
+            className="space-y-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!(moveUsd > 0) || moveTooMuch) return;
+              deposit.mutate({ wallet, amountUsd: moveUsd });
+            }}
+          >
+            <label className="num flex h-10 items-center gap-1 rounded-lg bg-bg-2 px-3 text-sm text-text-1">
+              $
+              <input
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step="0.01"
+                aria-label="Amount to move, in USD"
+                value={moveAmount}
+                onChange={(e) => {
+                  setMoveAmount(e.target.value);
+                }}
+                className="w-full bg-transparent text-text-0 outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setMoveAmount(usd(main).toFixed(2));
+                }}
+                className="text-xs text-accent-2"
+              >
+                Max
+              </button>
+            </label>
+            {moveTooMuch && <p className="text-sm text-signal">That&apos;s more than your wallet holds.</p>}
+            <button
+              type="submit"
+              disabled={deposit.isPending || !(moveUsd > 0) || moveTooMuch}
+              className="inline-flex h-10 w-full items-center justify-center rounded-lg bg-accent text-sm font-medium text-text-inverse transition-colors hocus:bg-accent-hi disabled:opacity-60"
+            >
+              {deposit.isPending ? 'Confirm in your wallet…' : moveUsd > 0 ? `Move $${moveUsd.toFixed(2)} to AI balance` : 'Move to AI balance'}
+            </button>
+            <p className="text-xs text-text-2">One signature. SmartRouter submits it on Monad and pays the gas. Return it to your wallet any time.</p>
+          </form>
+        ) : (
+          <p className="text-xs text-text-2">Add USDC on Monad to your wallet below first.</p>
+        )}
+      </section>
+
       <div className="flex gap-1 rounded-lg bg-bg-1 p-1" role="tablist" aria-label="Deposit method">
         {tabs
           .filter((t) => t.show)
@@ -81,78 +145,25 @@ export function DepositPanel({ wallet, onBack, arrived }: { wallet: Wallet; onBa
           ))}
       </div>
 
-      {tab === 'tempo' && (
-        <section className="space-y-3" aria-label="Deposit on Tempo">
+      {tab === 'monad' && (
+        <section className="space-y-3" aria-label="Deposit on Monad">
           <div className="flex justify-center">
-            <QrCode value={wallet.address} label="Your Tempo wallet address" />
+            <QrCode value={wallet.address} label="Your Monad wallet address" />
           </div>
           <div className="flex justify-center">
             <CopyAddress address={wallet.address} full />
           </div>
           <p className="text-center text-xs text-text-2">
-            Send {wallet.token.symbol} on {wallet.network?.name ?? 'Tempo'} to this address. It arrives instantly.
-            {isTestnet && ' On testnet you can also use Get test funds.'}
+            Send {wallet.token.symbol} on {wallet.network?.name ?? 'Monad'} to this address. Only Circle USDC on Monad counts:
           </p>
+          <p className="num text-center text-2xs break-all text-text-2">{wallet.token.address}</p>
+          <p className="text-center text-xs text-text-2">You don&apos;t need MON: SmartRouter pays the gas for everything you do here.</p>
         </section>
       )}
 
-      {tab === 'chain' && (
-        <section className="space-y-3" aria-label="Deposit from another chain">
-          <label className="block space-y-1 text-sm">
-            <span className="text-text-1">Network and token</span>
-            <select
-              value={picked ?? ''}
-              onChange={(e) => {
-                setPicked(e.target.value || null);
-              }}
-              className="h-10 w-full rounded-lg bg-bg-1 px-3 text-text-0 shadow-hairline outline-none"
-            >
-              <option value="">Choose…</option>
-              {bridges.map((o) => (
-                <option key={keyOf(o)} value={keyOf(o)}>
-                  {o.token} on {o.chainName || o.chain}
-                </option>
-              ))}
-            </select>
-          </label>
-          {needsRefund && (
-            <label className="block space-y-1 text-sm">
-              <span className="text-text-1">Your {option.chainName || 'Solana'} address (optional, for refunds)</span>
-              <input
-                value={refund}
-                onChange={(e) => {
-                  setRefund(e.target.value.trim());
-                }}
-                placeholder="Where a too-small deposit is refunded"
-                className="h-10 w-full rounded-lg bg-bg-1 px-3 text-text-0 shadow-hairline outline-none placeholder:text-text-2"
-              />
-            </label>
-          )}
-          {option && addr.isPending && <p className="text-sm text-text-2">Getting your deposit address…</p>}
-          {option && addr.isError && <p className="text-sm text-signal">{isApiError(addr.error) ? addr.error.message : 'Could not get a deposit address.'}</p>}
-          {addr.data && (
-            <div className="space-y-3">
-              <div className="flex justify-center">
-                <QrCode value={addr.data.address} label={`Deposit address on ${addr.data.chainName ?? addr.data.chain}`} />
-              </div>
-              <div className="flex justify-center">
-                <CopyAddress address={addr.data.address} explorer={false} full />
-              </div>
-              {addr.data.note && <p className="rounded-lg bg-warn/10 px-3 py-2 text-xs text-text-0">{addr.data.note}</p>}
-              {addr.data.estimate && (
-                <p className="text-xs text-text-2">
-                  Bridge fee about ${addr.data.estimate.feeUsd.toFixed(2)}
-                  {addr.data.estimate.etaSeconds ? ` · usually under ${String(Math.max(1, Math.round(addr.data.estimate.etaSeconds / 60)))} min` : ''}.
-                </p>
-              )}
-            </div>
-          )}
-        </section>
-      )}
-
-      {tab === 'card' && (
+      {tab === 'card' && card && (
         <section className="space-y-3" aria-label="Deposit by card">
-          <p className="text-sm text-text-1">Pay by card, Apple Pay or Google Pay. It arrives in your wallet as USDC.e a few minutes after the payment.</p>
+          <p className="text-sm text-text-1">Pay by card, Apple Pay or Google Pay. It arrives in your wallet as USDC on Monad a few minutes after the payment.</p>
           <label className="num flex h-10 items-center gap-1 rounded-lg bg-bg-1 px-3 text-sm text-text-1 shadow-hairline">
             $
             <input
@@ -170,11 +181,10 @@ export function DepositPanel({ wallet, onBack, arrived }: { wallet: Wallet; onBa
           </label>
           <button
             type="button"
-            disabled={!baseAddr.data || cardBusy || !(Number(cardAmount) > 0)}
+            disabled={cardBusy || !(Number(cardAmount) > 0)}
             onClick={() => {
-              if (!baseAddr.data) return;
               setCardBusy(true);
-              fundWithCard({ address: baseAddr.data.address, amountUsd: Number(cardAmount) })
+              fundWithCard({ address: wallet.address, amountUsd: Number(cardAmount) })
                 .catch((err: unknown) => {
                   toast.error('Card checkout failed', err instanceof Error ? err.message : undefined);
                 })
@@ -184,10 +194,9 @@ export function DepositPanel({ wallet, onBack, arrived }: { wallet: Wallet; onBa
             }}
             className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-accent text-sm font-medium text-text-inverse transition-colors hocus:bg-accent-hi disabled:opacity-60"
           >
-            <CreditCard size={16} /> {cardBusy ? 'Opening checkout…' : baseAddr.isPending ? 'Preparing…' : 'Continue to card checkout'}
+            <CreditCard size={16} /> {cardBusy ? 'Opening checkout…' : 'Continue to card checkout'}
           </button>
-          {baseAddr.isError && <p className="text-sm text-signal">{isApiError(baseAddr.error) ? baseAddr.error.message : 'Card deposits are unavailable right now.'}</p>}
-          {options.data?.card?.note && <p className="text-xs text-text-2">{options.data.card.note}</p>}
+          {card.note && <p className="text-xs text-text-2">{card.note}</p>}
         </section>
       )}
     </div>
