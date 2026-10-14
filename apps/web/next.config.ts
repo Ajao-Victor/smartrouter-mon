@@ -32,9 +32,11 @@ const PRIVY = {
   script: ['https://challenges.cloudflare.com'],
 };
 
+/** Deposits from other chains: the Aurora Intents Connect API (`/wallet/options → aurora.baseUrl`). */
+const AURORA = ['https://*.aurora.dev'];
 /** File uploads go from the browser straight to Cloudflare R2 (presigned PUT from `POST /uploads`). */
 const UPLOAD_STORAGE = ['https://*.r2.cloudflarestorage.com', 'https://*.eu.r2.cloudflarestorage.com'];
-const connectSrc = ["'self'", originOf(apiUrl), originOf(rpcUrl), originOf(sentryDsn), ...PRIVY.connect, ...UPLOAD_STORAGE].filter(Boolean).join(' ');
+const connectSrc = ["'self'", originOf(apiUrl), originOf(rpcUrl), originOf(sentryDsn), ...PRIVY.connect, ...AURORA, ...UPLOAD_STORAGE].filter(Boolean).join(' ');
 const mediaSrc = ["'self'", 'blob:', objectStorageHost ? `https://${objectStorageHost}` : ''].filter(Boolean).join(' ');
 const imgSrc = ["'self'", 'data:', 'blob:', objectStorageHost ? `https://${objectStorageHost}` : ''].filter(Boolean).join(' ');
 
