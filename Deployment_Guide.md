@@ -1,7 +1,7 @@
 # SmartRouter web — Deployment Guide (Vercel)
 
-Source of truth: *SmartRouter Frontend Architecture* (Oct 9, 2026), section "Deploy to Vercel". This guide
-turns that section into a checklist for `apps/web`.
+Source of truth: *SmartRouter Frontend Architecture* (Oct 9, 2026), section "Deploy to Vercel", updated for
+SmartRouter on Monad (`Monad.docx`). This guide turns those into a checklist for `apps/web`.
 
 ## 1. What gets deployed
 
@@ -9,8 +9,8 @@ turns that section into a checklist for `apps/web`.
 |---|---|
 | Framework | Next.js 15 (App Router), pnpm workspace, root manifest at the repo root |
 | App directory | `apps/web` |
-| Backends (from the PDF) | Testnet: `https://smartrouter-testnet-8f580f845259.herokuapp.com` · Mainnet: `https://smartrouter-mainnet-9d3c469b9ffd.herokuapp.com` |
-| Branch → environment | `main` → **production (mainnet)** · `staging` → **staging (testnet / Moderato)** |
+| Backend (Monad mainnet, chain 143) | `https://smartrouter-mon-77e0210bcfa8.herokuapp.com` (Heroku app `smartrouter-mon`) |
+| Branch → environment | `main` → **production (Monad mainnet)**; previews use the same values |
 
 The frontend never proxies the API through Vercel rewrites: the browser calls `NEXT_PUBLIC_API_URL`
 directly with `credentials: 'include'`, so the backend sees the real client IP and the `sr_session`
@@ -45,12 +45,16 @@ against the real API — point them at the mock API (`NEXT_PUBLIC_MOCK=1`) if yo
 Set these in *Settings → Environment Variables*. They are the only values the browser needs (PDF
 "Vercel environment variables"); everything is public and ships in the bundle.
 
-| Variable | Production (`main`) | Staging (`staging`) |
-|---|---|---|
-| `NEXT_PUBLIC_API_URL` | `https://api.<domain>` (or the mainnet Heroku URL until DNS is live) | `https://api-staging.<domain>` (or the testnet Heroku URL) |
-| `NEXT_PUBLIC_TEMPO_NETWORK` | `tempo` | `moderato` |
-| `NEXT_PUBLIC_CHAIN_ID` | `4217` | `42431` |
-| `NEXT_PUBLIC_RPC_URL` | `https://rpc.tempo.xyz` | `https://rpc.moderato.tempo.xyz` |
+| Variable | Value (Production and Preview) |
+|---|---|
+| `NEXT_PUBLIC_API_URL` | `https://smartrouter-mon-77e0210bcfa8.herokuapp.com` (or `https://api.<domain>` once DNS is live) |
+| `NEXT_PUBLIC_CHAIN_ID` | `143` (Monad mainnet; also the default) |
+| `NEXT_PUBLIC_RPC_URL` | `https://rpc.monad.xyz` (public RPC; also the default) |
+| `NEXT_PUBLIC_PRIVY_APP_ID` | `cmv7760bf00ps0gl39z69z4e6` (Privy app `smartmon`) |
+
+Remove `NEXT_PUBLIC_TEMPO_NETWORK` if it is still set: the Tempo build read it, this one doesn't. Tempo
+is backend infrastructure only (SmartRouter's provider payments); the browser never touches it.
+`bash apps/web/scripts/vercel-env.sh` sets all of this.
 
 Optional:
 
