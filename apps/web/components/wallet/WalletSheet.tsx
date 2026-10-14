@@ -5,11 +5,9 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowUpRight, ArrowLeft, RefreshCw } from 'lucide-react';
 
 import type { SettingsPatch, User } from '@/lib/api/types';
-import { isTestnet } from '@/lib/env';
-import { formatUsd } from '@/lib/money';
+import { formatUsd, micro } from '@/lib/money';
 
 import { useReturnLocked, useWallet } from '@/hooks/useWallet';
-import { useFaucet } from '@/hooks/useWalletBalance';
 import { useUiStore } from '@/stores/uiStore';
 
 import { Sheet } from '@/components/ui/Sheet';
@@ -34,9 +32,10 @@ const DEPOSIT_POLL_MS = 10_000;
 const OPEN_POLL_MS = 30_000;
 
 /**
- * The Wallet panel (Handover "Wallet"): one balance, spending caps, Deposit and Send, and an
+ * The Wallet panel on Monad: the USDC in the Privy wallet, the AI balance in the SmartRouter vault
+ * (what answers are paid from), spending caps and the paid-answer setup, Deposit and Send, and an
  * activity feed — all from `GET /wallet` (refreshed after every deposit, send and paid answer).
- * Money for answers is locked and returned automatically; there is no second wallet to fund.
+ * Every action is a signature SmartRouter relays, so the user never needs MON.
  */
 export function WalletSheet({ user, onSignOut, onSettings, busy = {} }: WalletSheetProps) {
   const open = useUiStore((s) => s.walletSheetOpen);
@@ -46,7 +45,6 @@ export function WalletSheet({ user, onSignOut, onSettings, busy = {} }: WalletSh
   const openDialog = useUiStore((s) => s.openDialog);
   const wallet = useWallet({ enabled: open, pollMs: !open ? false : view === 'deposit' ? DEPOSIT_POLL_MS : OPEN_POLL_MS });
   const returnLocked = useReturnLocked();
-  const faucet = useFaucet(user.address);
 
   // "Funds arrived" when the balance goes up while the Deposit panel is open.
   const startBalance = useRef<number | null>(null);
@@ -138,20 +136,29 @@ export function WalletSheet({ user, onSignOut, onSettings, busy = {} }: WalletSh
                 </button>
               </div>
               <p className="text-xs text-text-2">
-                {w.token.symbol} · {w.network?.name ?? 'Tempo'}
+                {w.token.symbol} in your wallet · {w.network?.name ?? 'Monad'}
               </p>
             </div>
             {user.email && <p className="text-sm text-text-1">{user.email}</p>}
             <CopyAddress address={w.address} />
             {w.incomingUsd > 0 && <p className="text-sm text-accent-2">{formatUsd(w.incomingUsd)} arriving</p>}
-            {w.locked && w.locked.remainingUsd > 0 && (
+            <div className="rounded-lg bg-bg-2 px-3 py-2">
               <p className="text-sm text-text-1">
-                Locked for current chats: <span className="num">{formatUsd(w.locked.remainingUsd)}</span>{' '}
-                <button type="button" disabled={returnLocked.isPending} onClick={() => { returnLocked.mutate(); }} className="text-xs text-accent-2 underline-offset-2 hocus:underline disabled:opacity-60">
-                  {returnLocked.isPending ? 'Returning…' : 'Return now'}
-                </button>
+                AI balance: <span className="num text-text-0">{formatUsd(w.ai?.remainingUsd ?? micro(0))}</span>
+                {w.ai && w.ai.spentUsd > 0 && <span className="text-xs text-text-2"> · {formatUsd(w.ai.spentUsd)} settling</span>}
               </p>
-            )}
+              <p className="text-xs text-text-2">
+                Answers are paid from this. Move USDC in from Deposit.
+                {w.ai && w.ai.remainingUsd > 0 && (
+                  <>
+                    {' '}
+                    <button type="button" disabled={returnLocked.isPending} onClick={() => { returnLocked.mutate(); }} className="text-accent-2 underline-offset-2 hocus:underline disabled:opacity-60">
+                      {returnLocked.isPending ? 'Returning…' : 'Return to wallet'}
+                    </button>
+                  </>
+                )}
+              </p>
+            </div>
             <div className="flex flex-wrap gap-2">
               <button type="button" onClick={() => { setView('deposit'); }} className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-accent px-4 text-sm font-medium text-text-inverse transition-colors hocus:bg-accent-hi">
                 <ArrowDownToLine size={16} /> Deposit
@@ -159,11 +166,6 @@ export function WalletSheet({ user, onSignOut, onSettings, busy = {} }: WalletSh
               <button type="button" onClick={() => { setView('send'); }} className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-bg-2 px-4 text-sm font-medium text-text-0 transition-colors hocus:bg-bg-3">
                 <ArrowUpRight size={16} /> Send
               </button>
-              {isTestnet && (
-                <button type="button" disabled={faucet.isPending} onClick={() => { faucet.mutate(undefined, { onSuccess: () => void wallet.refetch() }); }} className="inline-flex h-10 items-center rounded-lg px-3 text-sm text-text-1 transition-colors hocus:bg-bg-2 hocus:text-text-0 disabled:opacity-60">
-                  {faucet.isPending ? 'Requesting…' : 'Get test funds'}
-                </button>
-              )}
             </div>
             {!w.features.cashOut && <p className="text-2xs text-text-2">Cash out to a bank: coming soon.</p>}
           </section>
@@ -202,7 +204,7 @@ export function WalletSheet({ user, onSignOut, onSettings, busy = {} }: WalletSh
             <button type="button" onClick={onSignOut} disabled={busy.signOut} className="rounded-lg border border-signal/40 px-3 py-1.5 text-sm text-signal transition-colors hocus:bg-signal/10 disabled:opacity-60">
               {busy.signOut ? 'Signing out…' : 'Sign out'}
             </button>
-            <p className="text-xs text-text-2">Money locked for chats returns to your wallet automatically about two hours after the last answer. Sign in with the same email on any device to get your chats back.</p>
+            <p className="text-xs text-text-2">Your AI balance stays in the SmartRouter vault on Monad until you return it. Sign in with the same email on any device to get your chats and balance back.</p>
           </section>
         </div>
       )}
