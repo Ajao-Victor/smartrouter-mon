@@ -4,19 +4,21 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { walletSchema } from '@/lib/api/types';
 
 import { server } from '@/tests/mocks/server';
-import { MOCK_SEND_CODE, mockWallet, resetMockState } from '@/tests/mocks/state';
+import { MOCK_SEND_CODE, mockWallet, resetMockState, state } from '@/tests/mocks/state';
 
 import { SendPanel } from '../SendPanel';
 
 /**
- * Send, against the mock API. By default (live backend since Oct 13) there is no email code:
- * Review → Continue → signature. When the backend turns codes on (`features.sendCode.required`):
- * Review → Continue emails a code → six boxes → the sixth digit submits.
+ * Send USDC on Monad, against the mock API. By default (live backend since Oct 13) there is no
+ * email code: Review → Continue → the TransferWithAuthorization signature → `/send/:id/sign`. When
+ * the backend turns codes on (`features.sendCode.required`): Review → Continue emails a code → six
+ * boxes → the sixth digit submits.
  */
 const wallet = walletSchema.parse({
-  address: '0x5b9da9fa5d210691948de6f9cf6bf97fa4e8cf5b',
-  network: { chainId: 42431, name: 'Tempo Testnet (Moderato)' },
-  token: { address: '0x20c0000000000000000000000000000000000000', symbol: 'pathUSD', decimals: 6 },
+  // The signing wallet is the mock user's: the pre-sign check refuses a `from` that isn't ours.
+  address: state.user.address,
+  network: { chainId: 143, name: 'Monad' },
+  token: { address: '0x754704bc059f8c67012fed69bc8a327a5aafb603', symbol: 'USDC', decimals: 6 },
   main: { balanceUsd: 12.5 },
   features: { sendCode: { required: true, sentTo: 'd•••@smartrouter.dev', ttlMinutes: 10 } },
 });
@@ -138,5 +140,18 @@ describe('SendPanel: email code before a send (features.sendCode.required: true)
     setup(walletSchema.parse({ ...wallet, features: { sendCode: { required: true, sentTo: null, ttlMinutes: 10 } } }));
     expect(screen.getByText('Add an email to your account to send money out.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add an email' })).toBeInTheDocument();
+  });
+});
+
+describe('SendPanel: Monad address checks', () => {
+  it('refuses an invalid address and your own address before any request', () => {
+    setup(walletSchema.parse({ ...wallet, features: {} }));
+    fireEvent.change(screen.getByLabelText('To address'), { target: { value: '0x123' } });
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '1' } });
+    expect(screen.getByText(/Enter a valid Monad address/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('To address'), { target: { value: state.user.address } });
+    expect(screen.getByText("That's your own address.")).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review' })).toBeDisabled();
   });
 });
