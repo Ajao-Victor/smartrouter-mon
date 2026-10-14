@@ -13,12 +13,11 @@ export default defineConfig({
     exclude: ['node_modules', '.next', 'tests/e2e/**'],
     css: false,
     passWithNoTests: true,
-    // lib/env.ts validates at import; give tests the PDF testnet config with mocks on.
+    // lib/env.ts validates at import; give tests the Monad config with mocks on.
     env: {
       NEXT_PUBLIC_API_URL: 'http://localhost:8787',
-      NEXT_PUBLIC_TEMPO_NETWORK: 'moderato',
-      NEXT_PUBLIC_CHAIN_ID: '42431',
-      NEXT_PUBLIC_RPC_URL: 'https://rpc.moderato.tempo.xyz',
+      NEXT_PUBLIC_CHAIN_ID: '143',
+      NEXT_PUBLIC_RPC_URL: 'https://rpc.monad.xyz',
       NEXT_PUBLIC_PRIVY_APP_ID: 'test-privy-app',
       NEXT_PUBLIC_MOCK: '1',
     },
