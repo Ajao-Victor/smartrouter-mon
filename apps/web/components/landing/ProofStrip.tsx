@@ -13,7 +13,7 @@ export function ProofStrip() {
   return (
     <section className="space-y-3">
       <p className="num text-center text-sm text-text-1">
-        <span className="text-text-0">10 providers</span> · <span className="text-text-0">~40 models</span> · paid per use on Tempo via MPP
+        <span className="text-text-0">10 providers</span> · <span className="text-text-0">~40 models</span> · paid per use in USDC on Monad
       </p>
       <div className="glass scrollbar-none relative overflow-hidden rounded-pill py-2" aria-label="Providers available via MPP">
         <motion.ul
