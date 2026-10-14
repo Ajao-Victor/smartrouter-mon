@@ -11,7 +11,7 @@ import { MagneticButton } from '@/components/ui/MagneticButton';
 
 /** PDF pitch, verbatim. */
 export const PITCH =
-  'Tell SmartRouter what you want done. It picks the best AI for your budget, and you pay per use from your Tempo wallet, from anywhere.';
+  'Tell SmartRouter what you want done. It picks the best AI for your budget, and you pay per use in USDC on Monad, from anywhere.';
 
 /** The headline is the first sentence; the rest reads as the lead so the pitch fits on a phone. */
 const HEADLINE = 'Tell SmartRouter what you want done.';
@@ -39,7 +39,7 @@ export function Hero({ onSignIn, signingIn = false, onStart, starting = false }:
           animate="visible"
           className="num text-2xs tracking-wider-ui text-text-2 uppercase sm:tracking-label"
         >
-          AI model marketplace · pay per use on Tempo via MPP
+          AI model marketplace · pay per use in USDC on Monad
         </motion.p>
         <motion.h1
           variants={staggerWords}
@@ -94,8 +94,8 @@ export function Hero({ onSignIn, signingIn = false, onStart, starting = false }:
           transition={{ delay: 1 }}
           className="text-sm text-text-2"
         >
-          No subscriptions. No API keys. Fund once with any Tempo token; unused allocation returns
-          to your wallet.
+          No subscriptions. No API keys. Top up with USDC on Monad; whatever you don&apos;t spend
+          returns to your wallet.
         </motion.p>
       </div>
       <motion.div
