@@ -81,5 +81,5 @@ export async function signWithSpendingKey(address: string, typed: TypedData): Pr
     types: typed.types,
     primaryType: typed.primaryType,
     message: toSignable(typed),
-  } as never);
+  });
 }
