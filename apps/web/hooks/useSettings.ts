@@ -10,9 +10,9 @@ import { toast } from '@/stores/toastStore';
 
 /**
  * `PATCH /me/settings { slider?, dailyLimitUsd?, weeklyLimitUsd?, autoFreeFallback?, country? }`.
- * The reply is the settings object; it is merged into the cached user. When the daily cap changed,
- * the reply carries `spendingKeyLimitUsd`: the spending key's on-chain limit is moved to it with
- * one more Privy signature (Handover "One-time setup: the spending key", step 4).
+ * The reply is the settings object; it is merged into the cached user. The vault enforces the caps
+ * on-chain, so when they changed (`vaultSetupNeeded`) the Setup is re-signed for this browser's
+ * spending key with the new caps — one more Privy signature, relayed, no MON needed.
  */
 export function useSettings() {
   const qc = useQueryClient();
@@ -20,13 +20,16 @@ export function useSettings() {
     mutationFn: async (patch: SettingsPatch) => {
       const settings = await api.me.updateSettings(patch);
       const wallet = qc.getQueryData<Wallet>(queryKeys.wallet.get());
-      if (patch.dailyLimitUsd !== undefined && settings.spendingKeyLimitUsd !== null && wallet?.spendingKey?.status === 'active' && wallet.spendingKey.setup) {
+      const registered = wallet?.spendingKey?.status === 'active' || wallet?.spendingKey?.status === 'expiring';
+      if (settings.vaultSetupNeeded && wallet && registered) {
         try {
-          const { updateSpendingKeyLimit } = await import('@/lib/tempo/spendingKey');
-          await updateSpendingKeyLimit({ address: wallet.address, token: wallet.spendingKey.setup.token, limitUsd: settings.spendingKeyLimitUsd, chainId: wallet.network?.chainId ?? null });
+          const { localKeyAddress, registerSpendingKey } = await import('@/lib/monad/spendingKey');
+          if (await localKeyAddress(wallet.address)) {
+            await registerSpendingKey({ address: wallet.address, dailyUsd: settings.dailyLimitUsd / 1e6, weeklyUsd: settings.weeklyLimitUsd / 1e6, reuseKey: true });
+          }
         } catch (err) {
-          console.error('[SmartRouter] spending key limit update failed', err);
-          toast.warn('Cap saved, but the spending key still has the old limit', 'Set it up again from the Wallet panel.');
+          console.error('[SmartRouter] vault cap update failed', err);
+          toast.warn('Caps saved, but Monad still has the old caps', 'Set up paid answers again from the Wallet panel.');
         }
       }
       return settings;
