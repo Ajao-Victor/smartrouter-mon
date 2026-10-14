@@ -4,16 +4,17 @@
  * `event:` + JSON `data:` lines separated by a blank line; lines starting with `:` are
  * heartbeats (every 15 s) and are ignored for content but reset the watchdog.
  *
- * Paid quotes go through `paidFetch` (the mppx session manager: 402 handshake, vouchers,
- * one deposit approval); free quotes use the plain `apiRequest` helper (X-Session-Token).
+ * Paid quotes go through `paidFetch` (Monad handoff §6: the 402 voucher challenge, signed by the
+ * spending key, then the same request with `X-SmartRouter-Voucher`); free quotes use the plain
+ * `apiRequest` helper (X-Session-Token).
  */
 import { z } from 'zod';
 
 import { ApiError, apiRequest, errorFromFetchFailure, errorFromResponse, isApiError } from '@/lib/api/client';
 import { RUN_PATH } from '@/lib/api/endpoints';
 import { fileSchema, usageSchema, usdSchema, type RunInput } from '@/lib/api/types';
-import { micro } from '@/lib/money';
-import { toPaymentError } from '@/lib/tempo/paymentErrors';
+import { micro, type MicroUsd } from '@/lib/money';
+import { toPaymentError } from '@/lib/monad/paymentErrors';
 
 export const HEARTBEAT_MS = 15_000;
 /** PDF: answers can take over a minute to start; heartbeats keep the connection open. */
@@ -28,7 +29,10 @@ const meta = z.object({
   chatId: z.string().nullish(),
   userMessageId: z.string().nullish(),
   assistantMessageId: z.string().nullish(),
+  /** Paid runs: what's left of the AI balance after this answer's charge. */
   remainingUsd: usdSchema.nullish(),
+  /** Paid runs: the router's decision hash, recorded on Monad with the receipt. */
+  routeHash: z.string().nullish(),
   /** Paid runs: the usage object for the banners (Handover "Usage banners"). */
   usage: usageSchema.nullish(),
 });
@@ -167,7 +171,7 @@ function dispatch(frame: Frame, h: RunHandlers): RunOutcome | null {
   }
 }
 
-async function openRun(body: RunInput, free: boolean, address: string | null, signal: AbortSignal): Promise<Response> {
+async function openRun(body: RunInput, free: boolean, address: string | null, maxPriceUsd: MicroUsd | null, signal: AbortSignal): Promise<Response> {
   const init: RequestInit = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -177,15 +181,15 @@ async function openRun(body: RunInput, free: boolean, address: string | null, si
   try {
     // Handover: free messages go through the normal api() helper; no wallet is involved.
     if (free) return await apiRequest(RUN_PATH, init);
-    // mppx (and viem) load on the first paid run only.
-    const { paidFetch } = await import('@/lib/tempo/session');
-    return await paidFetch(RUN_PATH, init, address ?? '');
+    // viem loads on the first paid run only.
+    const { paidFetch } = await import('@/lib/monad/payments');
+    return await paidFetch(RUN_PATH, init, address ?? '', maxPriceUsd);
   } catch (err) {
     if (isApiError(err)) throw err;
     const mapped = toPaymentError(err);
     if (mapped) throw mapped;
     // A fetch failure becomes NETWORK ("Could not reach SmartRouter" only if the device is offline;
-    // otherwise its real message). Anything else thrown (Privy wallet, viem, mppx) keeps its own
+    // otherwise its real message). Anything else thrown (Privy wallet, viem) keeps its own
     // message so it can be diagnosed.
     if (isFetchFailure(err)) throw errorFromFetchFailure(err);
     if (free) {
@@ -208,7 +212,7 @@ function isFetchFailure(err: unknown): boolean {
  * Start a run and stream events to `handlers`. Resolves with the outcome. Any event (including
  * heartbeat comments) resets the watchdog; silence for 60 s aborts with `TIMEOUT`.
  */
-export async function runStream(body: RunInput, options: { free: boolean; address?: string | null }, handlers: RunHandlers, signal?: AbortSignal): Promise<RunOutcome> {
+export async function runStream(body: RunInput, options: { free: boolean; address?: string | null; maxPriceUsd?: MicroUsd | null }, handlers: RunHandlers, signal?: AbortSignal): Promise<RunOutcome> {
   const controller = new AbortController();
   const onOuterAbort = () => {
     controller.abort();
@@ -226,7 +230,7 @@ export async function runStream(body: RunInput, options: { free: boolean; addres
   };
 
   try {
-    const res = await openRun(body, options.free, options.address ?? null, controller.signal);
+    const res = await openRun(body, options.free, options.address ?? null, options.maxPriceUsd ?? null, controller.signal);
     if (!res.ok) throw await errorFromResponse(res);
     const reader = res.body?.getReader();
     if (!reader) {
