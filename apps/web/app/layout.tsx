@@ -12,7 +12,7 @@ export const metadata: Metadata = {
   title: 'SmartRouter',
   applicationName: 'SmartRouter',
   description:
-    'Tell SmartRouter what you want done. It picks the best AI for your budget, and you pay per use from your Tempo wallet, from anywhere.',
+    'Tell SmartRouter what you want done. It picks the best AI for your budget, and you pay per use in USDC on Monad, from anywhere.',
   // PWA (PDF: "PWA later") — installable shell; no service worker yet (MSW's worker is dev-only).
   manifest: '/manifest.webmanifest',
   icons: {
