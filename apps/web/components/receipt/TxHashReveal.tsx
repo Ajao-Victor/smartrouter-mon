@@ -41,7 +41,7 @@ export function TxHashReveal({ hash }: { hash: string }) {
         {copied ? <Check size={14} /> : <Copy size={14} />}
       </button>
       {url && (
-        <a href={url} target="_blank" rel="noopener noreferrer" aria-label="View on Tempo explorer" className="rounded-md p-1 text-text-2 transition-colors hocus:bg-bg-2 hocus:text-accent-2">
+        <a href={url} target="_blank" rel="noopener noreferrer" aria-label="View on Monad explorer" className="rounded-md p-1 text-text-2 transition-colors hocus:bg-bg-2 hocus:text-accent-2">
           <ExternalLink size={14} />
         </a>
       )}
