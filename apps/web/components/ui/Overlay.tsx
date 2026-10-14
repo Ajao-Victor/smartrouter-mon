@@ -34,7 +34,7 @@ export interface OverlayProps {
 /**
  * Shared overlay engine: portal, dimmed glass backdrop, focus trap, Escape, body scroll lock,
  * optional velocity-based drag dismiss (design.md "Sheet physics"). Never rendered above
- * Tempo SDK dialogs (architecture.md §7): if an SDK dialog is open we don't mount at all.
+ * wallet SDK dialogs (architecture.md §7): if an SDK dialog is open we don't mount at all.
  */
 export function Overlay({
   open,
