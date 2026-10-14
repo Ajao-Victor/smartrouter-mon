@@ -5,6 +5,7 @@ import { walletSchema } from '@/lib/api/types';
 import { micro } from '@/lib/money';
 
 import { useAuthStore } from '@/stores/authStore';
+import { useDepositStore } from '@/stores/depositStore';
 import { useUiStore } from '@/stores/uiStore';
 
 import { ReducedMotionProvider } from '@/components/layout/ReducedMotionProvider';
@@ -38,12 +39,39 @@ const liveWallet = {
 const join = vi.fn();
 const getWallet = vi.fn();
 const activity = vi.fn();
+const options = vi.fn();
 vi.mock('@/lib/api/endpoints', () => ({
   api: {
     waitlist: { join: (i: unknown) => join(i) as Promise<void> },
-    wallet: { get: () => getWallet() as Promise<unknown>, activity: () => activity() as Promise<unknown>, options: () => Promise.resolve({ deposit: [], send: [], card: { chain: 'monad', token: 'USDC', note: 'Buy USDC on Monad with a card.' } }) },
+    wallet: { get: () => getWallet() as Promise<unknown>, activity: () => activity() as Promise<unknown>, options: () => options() as Promise<unknown> },
   },
 }));
+
+const baseOptions = { deposit: [], send: [], card: { chain: 'monad', token: 'USDC', note: 'Buy USDC on Monad with a card.' } };
+const auroraRecipe = {
+  available: true,
+  baseUrl: 'https://intents-connect.aurora.dev',
+  apiKeyProxyPath: '/aurora/',
+  flow: 'bridge-in',
+  type: 'evm',
+  destination: { chain: 'monad', chainId: 143, assetId: 'nep245:v2_1.omni.hot.tg:143_2dmLwYWkCQKyTjeUPAsGJuiVLbFx', tokenAddress: liveWallet.token.address },
+  steps: [
+    { to: liveWallet.token.address, functionSignature: 'approve(address,uint256)', parameters: [liveWallet.vault.address, '{MIN_AMOUNT_OUT}'], value: '0' },
+    { to: liveWallet.vault.address, functionSignature: 'depositFor(address,uint256)', parameters: [liveWallet.address, '{MIN_AMOUNT_OUT}'], value: '0' },
+  ],
+  chains: [
+    { chain: 'base', name: 'Base' },
+    { chain: 'arb', name: 'Arbitrum' },
+    { chain: 'sol', name: 'Solana' },
+  ],
+  metadata: { title: 'Top up SmartRouter AI balance', intent: 'smartrouter_deposit' },
+  note: '',
+};
+
+beforeEach(() => {
+  options.mockResolvedValue(baseOptions);
+  useDepositStore.getState().reset();
+});
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -130,5 +158,24 @@ describe('WalletSheet (GET /wallet)', () => {
     expect(screen.getByText(liveWallet.address)).toBeInTheDocument();
     expect(screen.getByText(liveWallet.token.address)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Move \$\d+\.\d{2} to AI balance/ })).toBeEnabled();
+    expect(screen.getByRole('note')).toHaveTextContent('This QR/address is explicitly for Circle USDC on Monad only. Do NOT send Base, Arbitrum, or other-chain USDC expecting an automatic bridge.');
+  });
+
+  it('Other chains shows a coming-soon card when the backend has no Aurora recipe', async () => {
+    wrap(<WalletSheet user={user} onSignOut={vi.fn()} onSettings={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Deposit' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Other chains' }));
+    expect(await screen.findByText('Other chains: coming soon')).toBeInTheDocument();
+  });
+
+  it('Other chains offers the EVM source chains from the Aurora recipe', async () => {
+    options.mockResolvedValue({ ...baseOptions, aurora: auroraRecipe });
+    wrap(<WalletSheet user={user} onSignOut={vi.fn()} onSettings={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Deposit' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Other chains' }));
+    expect(await screen.findByRole('radio', { name: 'Base' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Arbitrum' })).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: 'Solana' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Get Base deposit address' })).toBeEnabled();
   });
 });
