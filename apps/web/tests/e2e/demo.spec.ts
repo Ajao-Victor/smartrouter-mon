@@ -4,7 +4,7 @@ import { expect, test } from '@playwright/test';
  * Handover demo path on mocks: signed out the chat screen works (guest mode) → describe the task
  * → recommendations → pick a model → sign-in (mock Privy → POST /auth/privy → X-Session-Token) →
  * the kept message sends automatically → streamed answer with charge and receipt → chat history
- * in the sidebar → Wallet panel (balance, locked, caps, Deposit) → activity.
+ * in the sidebar → Wallet panel (USDC balance, AI balance, caps, Deposit on Monad) → activity.
  * Runs against `NEXT_PUBLIC_MOCK=1 next dev` (playwright.config webServer).
  */
 test.describe('demo path', () => {
@@ -54,13 +54,14 @@ test.describe('demo path', () => {
     await message.press('Enter');
     await expect(page.getByLabel('Assistant reply').nth(1).getByRole('button', { name: 'Receipt' })).toBeVisible({ timeout: 20_000 });
 
-    // Wallet panel: one balance, locked money, both cap bars, Deposit
+    // Wallet panel: USDC on Monad, the AI balance answers are paid from, both cap bars, Deposit
     await page.getByRole('button', { name: /^Wallet/ }).click();
     const sheet = page.getByRole('dialog');
     await expect(sheet).toContainText('Spending caps');
-    await expect(sheet).toContainText('Locked for current chats');
+    await expect(sheet).toContainText('AI balance:');
     await sheet.getByRole('button', { name: 'Deposit' }).click();
-    await expect(sheet.getByRole('tab', { name: 'Tempo' })).toBeVisible();
+    await expect(sheet.getByRole('tab', { name: 'Monad' })).toBeVisible();
+    await expect(sheet.getByRole('button', { name: /Move \$\d+\.\d{2} to AI balance/ })).toBeVisible();
     await page.keyboard.press('Escape');
 
     // Activity lists the runs (on a phone its link sits in the history drawer)
