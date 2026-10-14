@@ -132,7 +132,7 @@ export default function PrimitivesPage() {
           <Button variant="secondary" onClick={() => { setDrawer(true); }}>
             Open drawer
           </Button>
-          <Button variant="secondary" onClick={() => toast.success('Deposit received', '$2.00 USDC.e')}>
+          <Button variant="secondary" onClick={() => toast.success('Deposit received', '$2.00 USDC')}>
             Toast success
           </Button>
           <Button variant="secondary" onClick={() => toast.error('Allocation used — Top up $2')}>
@@ -153,14 +153,14 @@ export default function PrimitivesPage() {
         <p className="text-sm text-text-1">Drag down (or right on desktop) to dismiss.</p>
         <div className="mt-4 flex gap-3">
           <Button>Deposit</Button>
-          <Button variant="secondary">Swap to USDC.e</Button>
+          <Button variant="secondary">Swap to USDC</Button>
         </div>
       </Sheet>
       <Dialog
         open={dialog}
         onClose={() => { setDialog(false); }}
         title="Spend permission"
-        description="USDC.e only · payee SmartRouter · open and top-up sessions · expires in 30 days"
+        description="USDC on Monad only · payee SmartRouter vault · spending key expires in 7 days"
       >
         <div className="flex justify-end gap-3">
           <Button variant="ghost" onClick={() => { setDialog(false); }}>
