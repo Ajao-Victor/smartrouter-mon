@@ -1,5 +1,5 @@
-import { monad } from 'viem/chains';
 import type { Chain } from 'viem';
+import { monad } from 'viem/chains';
 
 import { env } from '@/lib/env';
 
