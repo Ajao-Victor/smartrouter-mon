@@ -136,6 +136,35 @@ function aiBalance() {
   return s ? { channelId: s.channelId, depositUsd: s.depositUsd, spentUsd: s.spentUsd, remainingUsd: s.remainingUsd } : null;
 }
 
+/** `GET /wallet/options → aurora` (backend `auroraRecipe`), with the mock contracts and user. */
+function auroraRecipe() {
+  const { usdc, vault } = contracts();
+  return {
+    available: true,
+    baseUrl: 'https://intents-connect.mock',
+    apiKeyProxyPath: '/aurora/',
+    flow: 'bridge-in' as const,
+    type: 'evm' as const,
+    destination: { chain: 'monad', chainId: CHAIN_ID, assetId: 'nep245:v2_1.omni.hot.tg:143_2dmLwYWkCQKyTjeUPAsGJuiVLbFx', tokenAddress: usdc },
+    steps: [
+      { to: usdc, functionSignature: 'approve(address,uint256)', parameters: [vault, '{MIN_AMOUNT_OUT}'], value: '0' },
+      { to: vault, functionSignature: 'depositFor(address,uint256)', parameters: [state.user.address, '{MIN_AMOUNT_OUT}'], value: '0' },
+    ],
+    chains: [
+      { chain: 'base', name: 'Base' },
+      { chain: 'arb', name: 'Arbitrum' },
+      { chain: 'op', name: 'Optimism' },
+      { chain: 'pol', name: 'Polygon' },
+      { chain: 'bsc', name: 'BNB Chain' },
+      { chain: 'avax', name: 'Avalanche' },
+      { chain: 'eth', name: 'Ethereum' },
+      { chain: 'sol', name: 'Solana' },
+    ],
+    metadata: { title: 'Top up SmartRouter AI balance', intent: 'smartrouter_deposit' },
+    note: 'Bridged USDC is deposited into your SmartRouter AI balance on Monad.',
+  };
+}
+
 function record(type: string, amountUsd: number, counterparty: string | null) {
   const txHash = mockTxHash();
   mockWallet.activity.unshift({ id: nextId('mv'), type, status: 'completed', amountUsd, chain: 'monad', token: 'USDC', counterparty, txHash, at: new Date().toISOString() });
@@ -340,7 +369,7 @@ export const handlers = [
         ? { status: 'active', address: mockWallet.spendingKey, expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(), onChainCaps: { dailyUsd: state.user.dailyLimitUsd, weeklyUsd: state.user.weeklyLimitUsd } }
         : { status: 'missing', address: null, expiresAt: null, onChainCaps: { dailyUsd: 0, weeklyUsd: 0 } },
       networkFees: { paidBy: 'smartrouter', sponsoredPerDay: 20, usedToday: 0 },
-      features: { crossChain: false, card: { via: 'privy', chain: 'monad', token: 'USDC' }, cashOut: false, sendCode: { required: mockWallet.sendCodeRequired, sentTo: 'd•••@smartrouter.dev', ttlMinutes: 10 } },
+      features: { crossChain: true, card: { via: 'privy', chain: 'monad', token: 'USDC' }, cashOut: false, sendCode: { required: mockWallet.sendCodeRequired, sentTo: 'd•••@smartrouter.dev', ttlMinutes: 10 } },
     });
   }),
   http.get(url('/wallet/options'), () => {
@@ -349,9 +378,29 @@ export const handlers = [
       deposit: [{ ...monad, depositAvailable: true, method: 'direct', note: 'Send USDC on Monad to your wallet address, then move it to your AI balance with one signature.' }],
       send: [{ ...monad, method: 'direct' }],
       card: { via: 'privy', chain: 'monad', chainId: CHAIN_ID, token: 'USDC', tokenAddress: contracts().usdc, note: 'Buy USDC on Monad with a card (Privy funding); it lands in your wallet.' },
-      aurora: null,
+      aurora: auroraRecipe(),
       cashOut: null,
     });
+  }),
+  // Aurora Intents API-key proxy: only execution creates whose steps deposit into this user's AI balance.
+  http.post(url('/aurora/*'), async ({ request }) => {
+    const g = guard();
+    if (g) return g;
+    const path = new URL(request.url).pathname.replace(/^\/aurora\/+/, '');
+    if (!/^api\/v1\/executions\/[^/]+$/.test(path)) return error(403, 'FORBIDDEN', 'only execution create calls go through this proxy');
+    const b = await body<{ steps?: { to: string; functionSignature: string; parameters: string[] }[] }>(request);
+    const steps = b.steps ?? [];
+    const { usdc, vault } = contracts();
+    const approve = { to: usdc, functionSignature: 'approve(address,uint256)', parameters: [vault] };
+    const depositFor = { to: vault, functionSignature: 'depositFor(address,uint256)', parameters: [state.user.address] };
+    const same = (x: string | undefined, y: string | undefined) => !!x && !!y && x.toLowerCase() === y.toLowerCase();
+    const matches = (st: { to: string; functionSignature: string; parameters: string[] } | undefined, want: typeof approve) => !!st && same(st.to, want.to) && st.functionSignature === want.functionSignature && same(st.parameters[0], want.parameters[0]);
+    const ok = steps.length === 2 && matches(steps[0], approve) && matches(steps[1], depositFor);
+    if (!ok) return error(403, 'FORBIDDEN', 'steps must deposit into your SmartRouter AI balance only');
+    const usd = Number(steps[1]?.parameters[1] ?? 0) / 1e6;
+    depositToAi(usd);
+    mockWallet.activity.unshift({ id: nextId('mv'), type: 'deposit', status: 'completed', amountUsd: usd, chain: 'aurora', token: 'USDC', counterparty: null, txHash: mockTxHash(), at: new Date().toISOString() });
+    return HttpResponse.json({ id: nextId('aurora'), status: 'CREATED', depositAddress: `0x${'d3'.repeat(20)}` });
   }),
   http.get(url('/wallet/activity'), () => guard() ?? HttpResponse.json({ items: mockWallet.activity.map((a) => ({ ...a, deliveredUsd: a.amountUsd, explorerUrl: a.txHash ? `${EXPLORER}/tx/${a.txHash}` : null })), nextBefore: null, indexer: null })),
 
