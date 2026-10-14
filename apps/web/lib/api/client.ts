@@ -46,6 +46,7 @@ function codeFromStatus(status: number): ApiErrorCode {
   if (status === 402) return 'PAYMENT_REQUIRED';
   if (status === 403) return 'FORBIDDEN';
   if (status === 404) return 'NOT_FOUND';
+  // 409 is also SETUP_REQUIRED / EMAIL_REQUIRED; those always carry a `code`.
   if (status === 409) return 'QUOTE_USED';
   if (status === 410) return 'QUOTE_EXPIRED';
   if (status === 400 || status === 422) return 'VALIDATION_FAILED';
@@ -143,8 +144,7 @@ export function apiUrl(path: string): string {
  * browser allows it), and on any 401 drops the token and opens the sign-in modal. `/auth/*`
  * calls are excluded from the modal: the sign-in flow handles its own failures.
  *
- * The mppx session manager uses this too (`fetch: (url, init) => apiRequest(...)`), so paid
- * runs carry the session header.
+ * Paid runs use this too (`lib/monad/payments.ts`), so the voucher retry carries the session header.
  */
 export async function apiRequest(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
