@@ -20,6 +20,7 @@ import { voucherChallengeSchema, type VoucherChallenge } from '@/lib/api/types';
 import { env } from '@/lib/env';
 import type { MicroUsd } from '@/lib/money';
 
+import { MOCK_SIGNATURE } from './privyWallet';
 import { signWithSpendingKey } from './spendingKey';
 import { assertTypedData, TypedDataMismatch, VOUCHER_HEADER } from './typedData';
 
@@ -76,7 +77,8 @@ async function paidOnce(path: string, init: RequestInit, address: string, maxPri
   if (maxPriceUsd !== null && priceUsd !== null && Math.round(priceUsd * 1e6) > maxPriceUsd) {
     throw new ApiError({ status: 402, code: 'QUOTE_EXPIRED', message: 'The price changed since the quote. Getting a fresh quote.' });
   }
-  const signature = await signWithSpendingKey(address, voucher);
+  // Mocks: a browser that never ran setup still gets through (MSW doesn't verify signatures).
+  const signature = (await signWithSpendingKey(address, voucher)) ?? (env.mock ? MOCK_SIGNATURE : null);
   if (!signature) throw new SpendingKeyMissing();
 
   const headers = new Headers(init.headers);
