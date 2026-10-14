@@ -5,8 +5,8 @@ import { ShieldCheck, ShieldAlert } from 'lucide-react';
 
 import { queryKeys } from '@/lib/api/keys';
 import type { Wallet } from '@/lib/api/types';
-import { formatUsd } from '@/lib/money';
 import { localKeyAddress } from '@/lib/monad/spendingKey';
+import { formatUsd } from '@/lib/money';
 
 import { useSetupSpendingKey } from '@/hooks/useWallet';
 
