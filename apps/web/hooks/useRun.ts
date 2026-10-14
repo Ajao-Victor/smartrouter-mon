@@ -10,7 +10,7 @@ import { queryKeys } from '@/lib/api/keys';
 import { runStream, type RunOutcome, type SseError } from '@/lib/api/sse';
 import { FREE_MODEL_ID, freeFallbackSchema, type FreeFallback, type MessageAttachment, type Quote, type User } from '@/lib/api/types';
 import { env } from '@/lib/env';
-import { toPaymentError } from '@/lib/tempo/paymentErrors';
+import { toPaymentError } from '@/lib/monad/paymentErrors';
 
 import { optimisticMessage, useChatCache } from '@/hooks/useChat';
 import { isQuoteExpired } from '@/hooks/useQuote';
@@ -45,7 +45,7 @@ export type RunStart = 'started' | 'blocked' | 'needs_key' | 'needs_requote' | '
 /** Why a paid answer can't go out right now (Handover "Usage banners" / "Errors"). */
 export interface PaidBlock {
   prompt: string;
-  /** `daily` / `weekly` = cap reached ("Raise cap"); `balance` = wallet can't fund it ("Add funds"). */
+  /** `daily` / `weekly` = cap reached ("Raise cap"); `balance` = the AI balance can't cover it ("Add funds"). */
   meter: 'daily' | 'weekly' | 'balance';
   message: string;
   freeFallback: FreeFallback;
@@ -57,6 +57,7 @@ const FREE_FALLBACK_DEFAULT: FreeFallback = { available: true, remaining: null, 
 const PRE_STREAM_CODES: ReadonlySet<string> = new Set([
   'ALLOCATION_EXHAUSTED',
   'SPENDING_CAP_REACHED',
+  'SETUP_REQUIRED',
   'SPENDING_KEY_MISSING',
   'INSUFFICIENT_FUNDS',
   'PAYMENT_REQUIRED',
@@ -64,7 +65,6 @@ const PRE_STREAM_CODES: ReadonlySet<string> = new Set([
   'QUOTE_USED',
   'VALIDATION_FAILED',
   'RATE_LIMITED',
-  'SESSION_BUSY',
   'FREE_LIMIT_REACHED',
   'PAYMENT_CANCELLED',
   'PAYMENT_FAILED',
@@ -89,8 +89,8 @@ function capMeter(details: unknown): 'daily' | 'weekly' {
 
 /**
  * One turn in the browser (Handover "Every message follows the same steps"): quote → run.
- * Free quotes: `POST /run` with the plain `api()` helper, no wallet. Paid quotes: the spending key
- * signs through the mppx session (automatic small deposits within the caps, silent vouchers).
+ * Free quotes: `POST /run` with the plain `api()` helper, no wallet. Paid quotes: the 402 voucher
+ * challenge is signed silently by the spending key and paid from the AI balance in the vault.
  * SSE events go into the stream store; `done` records the charge and refreshes the banner.
  * Failed answers are never charged.
  */
@@ -121,8 +121,9 @@ export function useRun(chatId: string) {
   }, [qc]);
 
   /**
-   * Before the first paid answer: paid runs enabled, and the spending key set up in this browser
-   * (`GET /wallet` → `spendingKey.status` is `active` and the key is ours).
+   * Before a paid answer: paid runs enabled, and the spending key registered in the vault is the
+   * one saved in this browser (`GET /wallet` → `spendingKey`). `unknown` (Monad not readable right
+   * now) defers to the server, which answers 409 SETUP_REQUIRED if setup is really missing.
    */
   const preparePayments = useCallback(async (): Promise<void> => {
     if (!useAllocationStore.getState().paidRunsEnabled) {
@@ -132,11 +133,13 @@ export function useRun(chatId: string) {
     const address = walletAddress();
     if (!address) throw new ApiError({ status: 401, code: 'UNAUTHENTICATED', message: 'Sign in to run paid models.' });
     const w = await qc.query({ queryKey: queryKeys.wallet.get(), queryFn: ({ signal }) => api.wallet.get(signal), staleTime: 30_000 });
-    const { localKeyAddress } = await import('@/lib/tempo/spendingKey');
+    const { localKeyAddress } = await import('@/lib/monad/spendingKey');
     const local = await localKeyAddress(address);
     const key = w.spendingKey;
-    if (!key || key.status !== 'active' || !local || key.address?.toLowerCase() !== local.toLowerCase()) {
-      const { SpendingKeyMissing } = await import('@/lib/tempo/session');
+    const registered = key?.status === 'active' || key?.status === 'expiring';
+    const ours = !!local && !!key?.address && key.address.toLowerCase() === local.toLowerCase();
+    if (!local || (key?.status !== 'unknown' && !(registered && ours))) {
+      const { SpendingKeyMissing } = await import('@/lib/monad/payments');
       throw new SpendingKeyMissing();
     }
   }, [qc, walletAddress]);
@@ -149,7 +152,7 @@ export function useRun(chatId: string) {
       abortRef.current = controller;
       const outcome = await runStream(
         { quoteId: quote.quoteId, prompt },
-        { free: quote.free, address: walletAddress() },
+        { free: quote.free, address: walletAddress(), maxPriceUsd: quote.priceUsd },
         {
           onMeta: (m) => {
             useStreamStore.getState().setMeta(messageId, { requestId: m.requestId, modelId: m.modelId, label: m.label, priceUsd: m.priceUsd, free: m.free, userMessageId: m.userMessageId ?? null, assistantMessageId: m.assistantMessageId ?? null });
@@ -221,16 +224,22 @@ export function useRun(chatId: string) {
           void qc.invalidateQueries({ queryKey: queryKeys.me() });
           return 'blocked';
         case 'INSUFFICIENT_FUNDS':
-          // The wallet is empty (the deposit can't be made): "Add funds", not "Allocation used".
+          // The wallet itself is short of USDC: "Add funds".
           setBlocked({ prompt, meter: 'balance', message: e.message, freeFallback: freeFallbackFrom(e.details) });
           return 'blocked';
         case 'SPENDING_KEY_MISSING':
+        case 'SETUP_REQUIRED':
+          // 409: register the spending key and caps (one Privy signature), then send again.
           return 'needs_key';
         case 'ALLOCATION_EXHAUSTED':
-          toast.error('Could not open the next deposit', e.message);
-          return 'cancelled';
+          // 402: the AI balance can't cover this answer — "Add funds" (move USDC in) or continue free.
+          setBlocked({ prompt, meter: 'balance', message: e.message, freeFallback: freeFallbackFrom(e.details) });
+          void qc.invalidateQueries({ queryKey: queryKeys.wallet.all() });
+          return 'blocked';
         case 'PAYMENT_REQUIRED':
-          toast.error('Payment required', e.message);
+          // The voucher was signed and still refused (a second challenge): nothing was charged.
+          console.error('[SmartRouter] voucher refused', e.details);
+          toast.error('Payment was not accepted — you were not charged', e.message);
           return 'cancelled';
         case 'QUOTE_EXPIRED':
         case 'VALIDATION_FAILED':
@@ -243,9 +252,6 @@ export function useRun(chatId: string) {
           setCooldownKey((k) => k + 1);
           toast.warn(`Busy — sending again in ${String(retryAfterRef.current)} s`);
           return 'rate_limited';
-        case 'SESSION_BUSY':
-          toast.warn('A payment is already in progress', 'Wait for the current answer to start streaming.');
-          return 'busy';
         case 'FREE_LIMIT_REACHED':
           // The server's message says which limit (yours, or the free model's daily capacity).
           toast.warn(e.message || 'Free messages reset at 00:00 UTC', 'Pick a paid model to keep going.');
