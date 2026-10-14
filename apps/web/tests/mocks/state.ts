@@ -108,8 +108,11 @@ export function nextId(prefix: string): string {
   return `${prefix}_${String(counter).padStart(4, '0')}`;
 }
 
+/** The mock user's AI balance in SmartRouterVault (a returning user with $2 moved in). */
+export const MOCK_AI_BALANCE_USD = 2;
+
 function blank(): MockState {
-  return { authed: true, user: mockUser(), chats: new Map(), quotes: new Map(), session: null, requests: new Map(), freeUsed: 0, feedback: [], votes: [], waitlist: [] };
+  return { authed: true, user: mockUser(), chats: new Map(), quotes: new Map(), session: openAiBalance(MOCK_AI_BALANCE_USD), requests: new Map(), freeUsed: 0, feedback: [], votes: [], waitlist: [] };
 }
 
 export const state: MockState = blank();
@@ -119,9 +122,13 @@ export function resetMockState(over: Partial<Pick<MockState, 'authed' | 'session
   counter = 0;
   Object.assign(state, fresh, over);
   mockWallet.balanceUsd = 12.5;
+  mockWallet.setupDone = true;
   mockWallet.spendingKey = null;
+  mockWallet.voucherTotalMicro = 0n;
   mockWallet.sendCode = null;
   mockWallet.sendCodeRequired = false;
+  mockWallet.sends.clear();
+  mockWallet.activity = [];
   mockUploads.clear();
   seedDemoChat();
 }
@@ -287,10 +294,18 @@ export function makeQuote(chatId: string, modelId: string, prompt: string): Mock
   return quote;
 }
 
-/* --------------------------------- sessions --------------------------------- */
+/* -------------------------------- AI balance -------------------------------- */
 
-export function openSession(depositUsd: number): MockSession {
-  const s: MockSession = { channelId: nextId('ch'), depositUsd, spentUsd: 0, remainingUsd: depositUsd, requests: 0, status: 'open', openedAt: NOW() };
+function openAiBalance(depositUsd: number): MockSession {
+  return { channelId: `0x${'cd'.repeat(32)}`, depositUsd, spentUsd: 0, remainingUsd: depositUsd, requests: 0, status: 'open', openedAt: new Date().toISOString() };
+}
+
+/** Move USDC into the AI balance (`POST /wallet/deposit`). */
+export function depositToAi(usd: number): MockSession {
+  const s = state.session ?? openAiBalance(0);
+  s.depositUsd = Math.round((s.depositUsd + usd) * 1e6) / 1e6;
+  s.remainingUsd = Math.round((s.remainingUsd + usd) * 1e6) / 1e6;
+  s.status = 'open';
   state.session = s;
   return s;
 }
@@ -341,12 +356,12 @@ export function pollRequest(id: string): MockRequest | null {
 /* ----------------------------------- seed ----------------------------------- */
 
 function seedDemoChat(): void {
-  const chat = createChat({ taskType: 'writing', description: 'Write a LinkedIn post about launching on Tempo' });
+  const chat = createChat({ taskType: 'writing', description: 'Write a LinkedIn post about launching on Monad' });
   chat.title = 'LinkedIn post about launching on Tempo';
   chat.currentModelId = 'openrouter:z-ai/glm-5.3-flash';
-  appendMessage(chat.id, { role: 'user', text: 'Write a LinkedIn post about launching on Tempo', modelId: null, requestId: null, chargedUsd: null, files: [], status: 'done' });
-  const req = recordRequest({ status: 'succeeded', modelId: chat.currentModelId, label: 'GLM 5.3 Flash', chatId: chat.id, chargedUsd: 0.0009, refundedUsd: null, latencyMs: 1200, text: 'We just launched on Tempo 🚀 …', files: [], error: null, free: false, compareGroup: null });
-  appendMessage(chat.id, { role: 'assistant', text: 'We just launched on Tempo 🚀 Pay per use for 40+ AI models, no subscriptions, from anywhere.', modelId: chat.currentModelId, requestId: req.requestId, chargedUsd: 0.0009, files: [], status: 'done' });
+  appendMessage(chat.id, { role: 'user', text: 'Write a LinkedIn post about launching on Monad', modelId: null, requestId: null, chargedUsd: null, files: [], status: 'done' });
+  const req = recordRequest({ status: 'succeeded', modelId: chat.currentModelId, label: 'GLM 5.3 Flash', chatId: chat.id, chargedUsd: 0.0009, refundedUsd: null, latencyMs: 1200, text: 'We just launched on Monad 🚀 …', files: [], error: null, free: false, compareGroup: null });
+  appendMessage(chat.id, { role: 'assistant', text: 'We just launched on Monad 🚀 Pay per use for 40+ AI models in USDC, no subscriptions, from anywhere.', modelId: chat.currentModelId, requestId: req.requestId, chargedUsd: 0.0009, files: [], status: 'done' });
   chat.spentUsd = 0.0009;
 }
 
@@ -373,16 +388,38 @@ export function dailySpentUsd(): number {
   return Math.round(total * 1e6) / 1e6;
 }
 
-/** Mock main-wallet balance (USD) for the Wallet panel and the balance alert. */
-/** The mock's emailed send code is always 123456 (also echoed as `devCode`, like testnet). */
+/** The mock's emailed send code is always 123456 (also echoed as `devCode`). */
 export const MOCK_SEND_CODE = '123456';
+
+export interface MockActivity {
+  id: string;
+  type: string;
+  status: string;
+  amountUsd: number;
+  chain: string;
+  token: string;
+  counterparty: string | null;
+  txHash: string | null;
+  at: string;
+}
+
+/** Mock wallet on Monad: USDC in the Privy wallet, the vault setup and the voucher total. */
 export const mockWallet = {
   balanceUsd: 12.5,
+  /** Spending key + caps registered in the vault (a returning user, so offline demos stream at once). */
+  setupDone: true,
   spendingKey: null as string | null,
+  /** Total the user's vouchers have authorised so far (micro-USD). */
+  voucherTotalMicro: 0n,
   sendCode: null as { id: string; body: string; attemptsLeft: number; used: boolean } | null,
   /** Backend SEND_CODE_REQUIRED (off on the live API since Oct 13). */
   sendCodeRequired: false,
+  /** Sends waiting for their signature (`POST /wallet/send/:id/sign`). */
+  sends: new Map<string, { to: string; amountUsd: number }>(),
+  activity: [] as MockActivity[],
 };
+
+export const mockTxHash = () => `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`;
 
 /** The backend's usage object (Handover "Usage banners"): daily + weekly caps, alert at 75/90/100%, balance alert. */
 export function usage() {
@@ -412,8 +449,8 @@ export function usage() {
             : `You've used ${String(cap.usedPct)}% of ${cap.meter === 'daily' ? "today's" : "this week's"} spending cap`,
       }
     : null;
-  const lockedLeft = s ? s.remainingUsd : 0;
-  if (alert?.level !== 'exhausted' && nextDepositUsd > 0 && lockedLeft < 0.01 && mockWallet.balanceUsd < nextDepositUsd) {
+  const aiLeft = s ? s.remainingUsd : 0;
+  if (alert?.level !== 'exhausted' && nextDepositUsd > 0 && aiLeft < 0.01 && mockWallet.balanceUsd < nextDepositUsd) {
     alert = { level: mockWallet.balanceUsd === 0 ? 'exhausted' : 'critical', meter: 'balance', usedPct: 100, action: 'add_funds', message: mockWallet.balanceUsd === 0 ? 'Your wallet is empty' : 'Your wallet balance is low' };
   }
   return { daily, weekly, deposit, nextDepositUsd, alert };
