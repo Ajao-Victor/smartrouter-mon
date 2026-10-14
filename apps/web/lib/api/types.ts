@@ -1,5 +1,6 @@
 /**
- * Live API contract — mapped from "SmartRouter Frontend Architecture" (Oct 9, 2026).
+ * Live API contract — SmartRouter on Monad (Monad handoff and the backend routes it cites),
+ * built on "SmartRouter Frontend Architecture" (Oct 9, 2026).
  *
  * Money arrives as USD decimals (`priceUsd`, `depositUsd`, `chargedUsd` …) and is converted to
  * branded integer micro-USD on parse. Field names follow the PDF; where the PDF names a value
@@ -73,7 +74,7 @@ const isoDate = z.string();
 export interface PrivySignInInput {
   identityToken: string;
 }
-/** → `{ userId, address, email, loginMethod, token, expiresAt }`; `address` is the Tempo wallet. */
+/** → `{ userId, address, email, loginMethod, token, expiresAt }`; `address` is the Privy embedded wallet on Monad that must sign. */
 export const privySignInSchema = z.object({
   userId: z.string(),
   address: z.string(),
@@ -117,12 +118,12 @@ export type CapMeter = z.output<typeof capMeterSchema>;
 export const usageSchema = z.object({
   daily: capMeterSchema.nullish().transform((v) => v ?? null),
   weekly: capMeterSchema.nullish().transform((v) => v ?? null),
-  /** Money currently locked for answers (the automatic deposit). Shown only as "Locked for current chats". */
+  /** The AI balance in SmartRouterVault: USDC held, answered-but-unsettled, and what's spendable. */
   deposit: z
     .object({ channelId: z.string().nullish(), depositUsd: usdOrZero, spentUsd: usdOrZero, remainingUsd: usdOrZero, usedPct: z.number().default(0) })
     .nullish()
     .transform((v) => v ?? null),
-  /** Size of the next automatic deposit. */
+  /** Suggested top-up of the AI balance (capped by what's left of today's and this week's caps). */
   nextDepositUsd: usdSchema.nullish().transform((v) => v ?? null),
   alert: usageAlertSchema.nullish().catch(null).transform((v) => v ?? null),
 });
@@ -145,8 +146,8 @@ export const settingsSchema = z.preprocess(
     weeklyLimitUsd: usdSchema.default(10),
     autoFreeFallback: z.boolean().default(true),
     country: z.string().nullish().transform((v) => v ?? null),
-    /** PATCH only: the spending key's new on-chain daily limit — update the key to it. */
-    spendingKeyLimitUsd: z.number().nullish().transform((v) => v ?? null),
+    /** PATCH only: caps changed, so the vault's on-chain caps differ until Setup is re-signed. */
+    vaultSetupNeeded: z.boolean().default(false),
   }),
 );
 export type Settings = z.output<typeof settingsSchema>;
@@ -171,6 +172,14 @@ export const userSchema = z.preprocess(
       usage: usageSchema.nullish().catch(null).transform((v) => v ?? null),
       /** Free messages left today, when the backend includes it. */
       freeRemaining: z.number().int().nonnegative().nullish().transform((v) => v ?? null),
+      /** Monad handoff §4: a working login has `network.chainId === 143`. */
+      network: z.object({ chainId: z.number(), name: z.string().default('Monad') }).nullish().transform((v) => v ?? null),
+      /** Whether the spending key and caps are registered in the vault. */
+      spendingKey: z
+        .object({ setupDone: z.boolean().default(false), address: z.string().nullish().transform((v) => v ?? null), expiresAt: isoDate.nullish().transform((v) => v ?? null) })
+        .nullish()
+        .catch(null)
+        .transform((v) => v ?? null),
     })
     .and(settingsSchema),
 );
@@ -187,63 +196,132 @@ export interface SettingsPatch {
 
 /* ------------------------------------ wallet ----------------------------------- */
 
-/** Spending key (Tempo access key with an on-chain daily limit) — `GET /wallet` → `spendingKey`. */
+/**
+ * EIP-712 typed data the backend hands over for signing (`GET /wallet/setup`,
+ * `POST /wallet/deposit/authorization`, `POST /wallet/send` → `typedData`, the 402 voucher).
+ * Integer fields arrive as decimal strings and are kept exactly; they become `bigint` only for
+ * the wallet call (Monad handoff §5.3).
+ */
+const typedFieldSchema = z.object({ name: z.string(), type: z.string() });
+export const typedDataSchema = z.object({
+  domain: z
+    .object({
+      name: z.string(),
+      version: z.string(),
+      chainId: z.coerce.number().int().positive(),
+      verifyingContract: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+    })
+    .passthrough(),
+  types: z.record(z.array(typedFieldSchema)),
+  primaryType: z.string(),
+  message: z.record(z.union([z.string(), z.number(), z.null()])),
+});
+export type TypedData = z.output<typeof typedDataSchema>;
+
+/** `GET /wallet/setup?signer=` → the Setup typed data (spending key + caps), signed by the Privy wallet. */
+export const setupRequestSchema = typedDataSchema.extend({ primaryType: z.literal('Setup') });
+export type SetupRequest = z.output<typeof setupRequestSchema>;
+
+/** `POST /wallet/deposit/authorization { amountUsd }` → ERC-3009 ReceiveWithAuthorization for Circle USDC. */
+export const depositAuthorizationSchema = typedDataSchema.extend({ primaryType: z.literal('ReceiveWithAuthorization') });
+export type DepositAuthorization = z.output<typeof depositAuthorizationSchema>;
+
+/** `details.voucher` on 402 PAYMENT_REQUIRED: the Voucher to sign with the spending key. */
+export const voucherChallengeSchema = typedDataSchema.extend({
+  primaryType: z.literal('Voucher'),
+  message: z.object({ user: z.string(), cumulativeAmount: z.union([z.string(), z.number()]).transform(String) }).passthrough(),
+  header: z.string().default('x-smartrouter-voucher'),
+});
+export type VoucherChallenge = z.output<typeof voucherChallengeSchema>;
+
+/** A relayed Monad transaction (`POST /wallet/setup`, `/wallet/deposit`, `/wallet/send/:id/sign`). */
+export const relayedTxSchema = z
+  .object({
+    ok: z.boolean().default(true),
+    txHash: z.string().nullish().transform((v) => v ?? null),
+    explorerUrl: z.string().nullish().transform((v) => v ?? null),
+    status: z.string().nullish().transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RelayedTx = z.output<typeof relayedTxSchema>;
+
+/** `POST /wallet/deposit` → the new AI balance. */
+export const depositResultSchema = relayedTxSchema.extend({
+  ai: z.object({ depositUsd: usdOrZero, remainingUsd: usdOrZero }).nullish().transform((v) => v ?? null),
+});
+export type DepositResult = z.output<typeof depositResultSchema>;
+
+/**
+ * Spending key (`GET /wallet` → `spendingKey`): a browser-held key registered in
+ * SmartRouterVault with the daily/weekly caps. `missing` / `expiring` / `unknown` → Set up.
+ */
 export const spendingKeySchema = z.object({
-  /** `active` | `missing` | `expiring` | `revoked` | `unknown`. */
+  /** `active` | `missing` | `expiring` | `unknown`. */
   status: z.string().default('missing'),
   address: z.string().nullish().transform((v) => v ?? null),
   expiresAt: isoDate.nullish().transform((v) => v ?? null),
-  onChain: z
-    .object({ remainingTodayUsd: z.number().nullish(), periodEndsAt: isoDate.nullish() })
-    .nullish()
-    .transform((v) => v ?? null),
-  setup: z
-    .object({
-      token: z.string(),
-      limitUsd: z.number(),
-      periodSeconds: z.number().default(86_400),
-      expiryDays: z.number().default(7),
-      scopes: z.array(z.object({ address: z.string() }).passthrough()).default([]),
-    })
+  /** The caps the vault enforces on-chain (they can lag the settings until Setup is re-signed). */
+  onChainCaps: z
+    .object({ dailyUsd: usdOrZero, weeklyUsd: usdOrZero })
     .nullish()
     .transform((v) => v ?? null),
 });
 export type SpendingKeyState = z.output<typeof spendingKeySchema>;
 
-const lockedSchema = z.object({ depositUsd: usdOrZero, spentUsd: usdOrZero, remainingUsd: usdOrZero });
+/** The AI balance: the user's account in SmartRouterVault (`GET /wallet` → `ai`). */
+const aiBalanceSchema = z.object({
+  channelId: z.string().nullish().transform((v) => v ?? null),
+  depositUsd: usdOrZero,
+  spentUsd: usdOrZero,
+  remainingUsd: usdOrZero,
+});
+export type AiBalance = z.output<typeof aiBalanceSchema>;
 
 /** `GET /wallet` — the Wallet panel in one call. */
-export const walletSchema = z.object({
-  address: z.string(),
-  network: z.object({ chainId: z.number(), name: z.string().default('Tempo') }).nullish().transform((v) => v ?? null),
-  token: z.object({ address: z.string(), symbol: z.string(), decimals: z.number().default(6) }),
-  main: z.object({ balanceUsd: usdOrZero }),
-  locked: lockedSchema.nullish().transform((v) => v ?? null),
-  caps: usageSchema.nullish().catch(null).transform((v) => v ?? null),
-  spendingKey: spendingKeySchema.nullish().catch(null).transform((v) => v ?? null),
-  incomingUsd: usdOrZero,
-  networkFees: z
-    .object({ sponsoredPerDay: z.number().default(0), usedToday: z.number().default(0) })
-    .passthrough()
-    .nullish()
-    .transform((v) => v ?? null),
-  features: z
-    .object({
-      crossChain: z.boolean().default(false),
-      card: z.boolean().default(false),
-      cashOut: z.boolean().default(false),
-      /**
-       * Whether sends need a 6-digit email code (backend SEND_CODE_REQUIRED; off since Oct 13).
-       * `sentTo` is the masked email (null: no email).
-       */
-      sendCode: z
-        .object({ required: z.boolean().default(false), sentTo: z.string().nullish().transform((v) => v ?? null), ttlMinutes: z.number().default(10) })
-        .nullish()
-        .catch(null)
-        .transform((v) => v ?? null),
-    })
-    .default({}),
-});
+export const walletSchema = z.preprocess(
+  (v) => (v && typeof v === 'object' && !('ai' in v) && 'locked' in v ? { ...v, ai: (v as { locked: unknown }).locked } : v),
+  z.object({
+    address: z.string(),
+    network: z
+      .object({ chainId: z.number(), name: z.string().default('Monad'), explorer: z.string().nullish().transform((v) => v ?? null) })
+      .nullish()
+      .transform((v) => v ?? null),
+    token: z.object({ address: z.string(), symbol: z.string().default('USDC'), decimals: z.number().default(6) }),
+    /** Circle USDC in the Privy wallet on Monad. */
+    main: z.object({ balanceUsd: usdOrZero }),
+    /** What answers are paid from. */
+    ai: aiBalanceSchema.nullish().transform((v) => v ?? null),
+    vault: z
+      .object({ address: z.string(), ledger: z.string().nullish().transform((v) => v ?? null) })
+      .nullish()
+      .transform((v) => v ?? null),
+    caps: usageSchema.nullish().catch(null).transform((v) => v ?? null),
+    spendingKey: spendingKeySchema.nullish().catch(null).transform((v) => v ?? null),
+    incomingUsd: usdOrZero,
+    networkFees: z
+      .object({ sponsoredPerDay: z.number().default(0), usedToday: z.number().default(0) })
+      .passthrough()
+      .nullish()
+      .transform((v) => v ?? null),
+    features: z
+      .object({
+        crossChain: z.boolean().default(false),
+        /** Monad: `{ via: 'privy', chain: 'monad', token: 'USDC' }`; any value means card funding is on. */
+        card: z.unknown().transform((v) => Boolean(v)),
+        cashOut: z.boolean().default(false),
+        /**
+         * Whether sends need a 6-digit email code (backend SEND_CODE_REQUIRED; off since Oct 13).
+         * `sentTo` is the masked email (null: no email).
+         */
+        sendCode: z
+          .object({ required: z.boolean().default(false), sentTo: z.string().nullish().transform((v) => v ?? null), ttlMinutes: z.number().default(10) })
+          .nullish()
+          .catch(null)
+          .transform((v) => v ?? null),
+      })
+      .default({}),
+  }),
+);
 export type Wallet = z.output<typeof walletSchema>;
 
 export const walletChainOptionSchema = z
@@ -253,60 +331,52 @@ export const walletChainOptionSchema = z
     chainName: z.string().default(''),
     vmType: z.string().default('evm'),
     token: z.string(),
+    tokenAddress: z.string().nullish(),
     method: z.string().default('direct'),
     depositAvailable: z.boolean().default(true),
+    note: z.string().nullish(),
   })
   .passthrough();
 export type WalletChainOption = z.output<typeof walletChainOptionSchema>;
 
-/** `GET /wallet/options` → `deposit[]`, `send[]`, `card`. */
+/** `GET /wallet/options` → `deposit[]` (Monad direct, Aurora chains), `send[]`, `card` (Privy on Monad). */
 export const walletOptionsSchema = z.object({
   deposit: z.array(walletChainOptionSchema).default([]),
   send: z.array(walletChainOptionSchema).default([]),
-  card: z.object({ chain: z.string(), token: z.string(), note: z.string().default('') }).passthrough().nullish().transform((v) => v ?? null),
-});
-export type WalletOptions = z.output<typeof walletOptionsSchema>;
-
-/** `POST /wallet/deposit-address { chain, token?, refundAddress? }`. */
-export const depositAddressSchema = z.object({
-  chain: z.string(),
-  chainName: z.string().nullish().transform((v) => v ?? null),
-  token: z.string(),
-  address: z.string(),
-  method: z.string().default('direct'),
-  note: z.string().nullish().transform((v) => v ?? null),
-  estimate: z
-    .object({ sendUsd: z.number(), receiveUsd: z.number(), feeUsd: z.number(), etaSeconds: z.number().nullish() })
+  card: z
+    .object({ chain: z.string(), chainId: z.number().nullish(), token: z.string(), tokenAddress: z.string().nullish(), note: z.string().default('') })
+    .passthrough()
     .nullish()
     .transform((v) => v ?? null),
 });
-export type DepositAddress = z.output<typeof depositAddressSchema>;
+export type WalletOptions = z.output<typeof walletOptionsSchema>;
 
+/** Monad handoff: only Monad USDC can be sent (`chain` is the literal `monad`). */
 export interface SendInput {
-  chain: string;
-  token: string;
+  chain: 'monad';
+  token: 'USDC';
   to: string;
   amountUsd: number;
 }
 
-/** `POST /wallet/send/quote`. */
+/** `POST /wallet/send/quote` — gasless on Monad, so no fees. */
 export const sendQuoteSchema = z.object({
   sendUsd: z.number(),
   receiveUsd: z.number(),
   receiveMinUsd: z.number().nullish().transform((v) => v ?? null),
   bridgeFeeUsd: z.number().default(0),
+  networkFeeUsd: z.number().default(0),
   etaSeconds: z.number().nullish().transform((v) => v ?? null),
 });
 export type SendQuote = z.output<typeof sendQuoteSchema>;
 
-/** `POST /wallet/send` → calls to sign as ONE Tempo transaction with `feePayer: true`. */
 /** `POST /wallet/send/code` → the code is emailed; it is bound to this exact send. */
 export const sendCodeSchema = z.object({
   verificationId: z.string(),
   sentTo: z.string().nullish().transform((v) => v ?? null),
   expiresAt: isoDate.nullish().transform((v) => v ?? null),
   attemptsAllowed: z.number().default(5),
-  /** Testnet only, when the backend echoes codes (SEND_CODE_ECHO). */
+  /** When the backend echoes codes (SEND_CODE_ECHO, development only). */
   devCode: z.string().nullish().transform((v) => v ?? null),
 });
 export type SendCode = z.output<typeof sendCodeSchema>;
@@ -320,16 +390,23 @@ export interface ConfirmedSendInput extends SendInput {
 /** `POST /wallet/send` body: `{ chain, token, to, amountUsd }`, plus the code when required. */
 export type SendRequest = SendInput | ConfirmedSendInput;
 
+/**
+ * `POST /wallet/send` → the ERC-3009 TransferWithAuthorization to sign with the Privy wallet,
+ * then `POST /wallet/send/:id/sign { signature }` (the operator relays it; no gas for the user).
+ */
 export const sendPlanSchema = z.object({
   sendId: z.string(),
-  calls: z.array(z.object({ to: z.string(), data: z.string(), value: z.string().nullish() })),
-  feePayer: z.boolean().default(true),
+  chainId: z.number().nullish().transform((v) => v ?? null),
+  typedData: typedDataSchema.extend({ primaryType: z.literal('TransferWithAuthorization') }),
+  sendUsd: z.number().nullish(),
+  receiveUsd: z.number().nullish(),
 });
 export type SendPlan = z.output<typeof sendPlanSchema>;
 
 export const walletActivityItemSchema = z
   .object({
     id: z.string(),
+    /** `deposit` · `send` · `to_ai_balance` · `from_ai_balance` · `answers_settled` … */
     type: z.string(),
     status: z.string(),
     amountUsd: z.number(),
@@ -338,6 +415,7 @@ export const walletActivityItemSchema = z
     token: z.string().nullish(),
     counterparty: z.string().nullish(),
     txHash: z.string().nullish(),
+    explorerUrl: z.string().nullish(),
     at: isoDate,
     spentUsd: z.number().nullish(),
   })
@@ -426,6 +504,8 @@ export const recommendResponseSchema = z.preprocess(
     /** Handover "Guest mode": signed out → `guest: true` and no quotes (`quoteId: null`). */
     guest: z.boolean().default(false),
     freeRemainingToday: z.number().int().nonnegative().nullish().transform((v) => v ?? null),
+    /** The router agent's decision: its keccak256 is the `routeHash` recorded on Monad. */
+    router: z.object({ source: z.string().nullish(), routeHash: z.string().nullish(), ms: z.number().nullish() }).nullish().transform((v) => v ?? null),
   }),
 );
 export type RecommendResponse = z.output<typeof recommendResponseSchema>;
@@ -466,6 +546,8 @@ export const createChatResponseSchema = z.preprocess(
     taskType: taskTypeSchema.nullish().transform((v) => v ?? null),
     title: z.string().nullish().transform((v) => v ?? null),
     freeRemainingToday: z.number().int().nonnegative().nullish().transform((v) => v ?? null),
+    /** The router agent's decision: its keccak256 is the `routeHash` recorded on Monad. */
+    router: z.object({ source: z.string().nullish(), routeHash: z.string().nullish(), ms: z.number().nullish() }).nullish().transform((v) => v ?? null),
   }),
 );
 export type CreateChatResponse = z.output<typeof createChatResponseSchema>;
@@ -618,7 +700,7 @@ export type Upload = z.output<typeof uploadSchema>;
 
 /* ---------------------------------- sessions ----------------------------------- */
 
-/** `GET /sessions/current`: `suggestedDepositUsd`, `network`, `session?` (deposit/spent/remaining/requests). */
+/** `GET /sessions/current` → `session`: the user's AI balance in SmartRouterVault. */
 export const sessionSummarySchema = z.preprocess(
   alias({ depositUsd: ['deposit', 'deposit_usd'], spentUsd: ['spent', 'spent_usd'], remainingUsd: ['remaining', 'remaining_usd'], channelId: ['channel_id', 'id'], openedAt: ['opened_at', 'createdAt'] }),
   z.object({
@@ -629,19 +711,26 @@ export const sessionSummarySchema = z.preprocess(
     channelId: z.string().nullish().transform((v) => v ?? null),
     status: z.string().nullish().transform((v) => v ?? 'open'),
     openedAt: isoDate.nullish().transform((v) => v ?? null),
+    /** Sign the next voucher for this + the quoted price (micro-USD, decimal string). */
+    nextVoucherBaseMicro: z.union([z.string(), z.number()]).nullish().transform((v) => (v === null || v === undefined ? null : String(v))),
+    setupDone: z.boolean().default(false),
+    signer: z.string().nullish().transform((v) => v ?? null),
+    signerExpiresAt: isoDate.nullish().transform((v) => v ?? null),
   }),
 );
 export type SessionSummary = z.output<typeof sessionSummarySchema>;
 
-/** `network` on `/sessions/current`: the chain to build the wallet client on (Handover "Paid messages", step 2). */
+/** `network` on `/sessions/current`: Monad, Circle USDC, the vault and ledger, the explorer. */
 export const paymentNetworkSchema = z.preprocess(
   (v) => (typeof v === 'string' ? { name: v } : v),
   z.object({
     name: z.string().nullish().transform((v) => v ?? null),
     chainId: z.coerce.number().int().positive().nullish().transform((v) => v ?? null),
     token: z.string().nullish().transform((v) => v ?? null),
-    recipient: z.string().nullish().transform((v) => v ?? null),
+    vault: z.string().nullish().transform((v) => v ?? null),
+    ledger: z.string().nullish().transform((v) => v ?? null),
     operator: z.string().nullish().transform((v) => v ?? null),
+    explorer: z.string().nullish().transform((v) => v ?? null),
   }),
 );
 export type PaymentNetwork = z.output<typeof paymentNetworkSchema>;
@@ -652,7 +741,7 @@ export const sessionsCurrentSchema = z.preprocess(
   z.object({
     /** Handover: false → hide paid models. */
     paidRunsEnabled: z.boolean().default(true),
-    /** Size of the next automatic deposit; 0 = a cap is reached (show the cap banner, don't pay). */
+    /** Suggested top-up of the AI balance; 0 = a cap is reached (show the cap banner, don't pay). */
     suggestedDepositUsd: usdSchema.default(1),
     network: paymentNetworkSchema.nullish().transform((v) => v ?? null),
     usage: usageSchema.nullish().catch(null).transform((v) => v ?? null),
@@ -703,6 +792,9 @@ export const requestSchema = z.preprocess(
     finishedAt: isoDate.nullish().transform((v) => v ?? null),
     compareGroup: z.string().nullish().transform((v) => v ?? null),
     txHash: z.string().nullish().transform((v) => v ?? null),
+    /** On-chain receipt in SmartRouterLedger, once the worker has recorded it. */
+    routeHash: z.string().nullish().transform((v) => v ?? null),
+    ledgerTx: z.string().nullish().transform((v) => v ?? null),
   }),
 );
 export type RequestRecord = z.output<typeof requestSchema>;
@@ -719,6 +811,8 @@ export type RequestList = z.output<typeof requestListSchema>;
 export interface FeedbackInput {
   requestId: string;
   rating: 1 | -1;
+  /** EIP-712 Rating signed by the spending key: recorded on SmartRouterLedger. */
+  signature?: string;
 }
 
 /** `POST /compare/vote { compareGroup, winnerRequestId, prompt }`. */
@@ -726,6 +820,8 @@ export interface CompareVoteInput {
   compareGroup: string;
   winnerRequestId: string;
   prompt: string;
+  /** EIP-712 Vote signed by the spending key: recorded on SmartRouterLedger. */
+  signature?: string;
 }
 
 /* ---------------------------------- waitlist ----------------------------------- */
@@ -753,6 +849,7 @@ export interface RunInput {
 export const API_ERROR_CODES = [
   'PAYMENT_REQUIRED',
   'ALLOCATION_EXHAUSTED',
+  'SETUP_REQUIRED',
   'SPENDING_CAP_REACHED',
   'SEND_CODE_INVALID',
   'SEND_CODE_EXPIRED',
@@ -770,7 +867,7 @@ export const API_ERROR_CODES = [
 ] as const;
 export type ServerErrorCode = (typeof API_ERROR_CODES)[number];
 
-/** `details.freeFallback` on ALLOCATION_EXHAUSTED: whether free is available and how many are left. */
+/** `details.freeFallback` on ALLOCATION_EXHAUSTED / SPENDING_CAP_REACHED: whether free is available and how many are left. */
 export const freeFallbackSchema = z.preprocess(
   alias({ available: ['free', 'ok'], remaining: ['freeRemainingToday', 'left', 'messagesLeft', 'freeMessagesLeft'] }),
   z.object({ available: z.boolean().default(false), remaining: z.number().int().nonnegative().nullish().transform((v) => v ?? null), modelId: z.string().default(FREE_MODEL_ID), auto: z.boolean().default(false) }),
