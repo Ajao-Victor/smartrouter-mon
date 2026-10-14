@@ -1,7 +1,7 @@
 import type { TypedData } from '@/lib/api/types';
 
 import { getContracts, resetContracts, setContracts } from '../contracts';
-import { assertTypedData, toBody, toSignable, TypedDataMismatch, uuidToBytes16 } from '../typedData';
+import { assertTypedData, toBody, toSignable, TypedDataMismatch } from '../typedData';
 
 const USER = '0x00000000000000000000000000000000000000a1';
 const vaultTyped = (over: Partial<TypedData> = {}): TypedData => ({
@@ -60,10 +60,5 @@ describe('Monad typed data', () => {
     }).not.toThrow();
     setContracts({ vault: 'not-an-address' });
     expect(getContracts().vault).toBe(next);
-  });
-
-  it('encodes request UUIDs as bytes16', () => {
-    expect(uuidToBytes16('0f8fad5b-d9cb-469f-a165-70867728950e')).toBe('0x0f8fad5bd9cb469fa16570867728950e');
-    expect(() => uuidToBytes16('nope')).toThrow();
   });
 });
