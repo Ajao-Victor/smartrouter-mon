@@ -13,16 +13,15 @@ import { CapsEditor } from '../CapsEditor';
 import { WaitlistForm } from '../WaitlistForm';
 import { WalletSheet } from '../WalletSheet';
 
-vi.mock('@/lib/tempo/walletActions', () => ({ TOKEN_SYMBOL: 'pathUSD', getTokenBalance: vi.fn(), requestFaucet: vi.fn(), sendTokens: vi.fn(), mockDebit: vi.fn() }));
-
-/** Live testnet `GET /wallet` shape (Handover "Wallet panel layout"). */
+/** Monad `GET /wallet` shape (backend `apps/api/src/routes/wallet.ts`). */
 const liveWallet = {
   address: '0x5b9da9fa5d210691948de6f9cf6bf97fa4e8cf5b',
-  network: { chainId: 42431, name: 'Tempo Testnet (Moderato)' },
-  token: { address: '0x20c0000000000000000000000000000000000000', symbol: 'pathUSD', decimals: 6 },
+  network: { chainId: 143, name: 'Monad', explorer: 'https://monadscan.com' },
+  token: { address: '0x754704bc059f8c67012fed69bc8a327a5aafb603', symbol: 'USDC', decimals: 6 },
   main: { balanceUsd: 12.4 },
-  ai: null,
-  locked: { depositUsd: 1, spentUsd: 0.6, remainingUsd: 0.4 },
+  ai: { channelId: '0xcd', depositUsd: 1, spentUsd: 0.6, remainingUsd: 0.4 },
+  locked: { channelId: '0xcd', depositUsd: 1, spentUsd: 0.6, remainingUsd: 0.4 },
+  vault: { address: '0x88191be828c5ce6bda1c7796fb32450a10c3e54c', ledger: '0xdc28d25a044da278ae82cbf91cdf1c5997aa2163' },
   caps: {
     daily: { spentUsd: 1.6, limitUsd: 2, usedPct: 80, remainingUsd: 0.4, resetsAt: '2026-10-12T00:00:00.000Z' },
     weekly: { spentUsd: 4.1, limitUsd: 10, usedPct: 41, remainingUsd: 5.9 },
@@ -30,10 +29,10 @@ const liveWallet = {
     nextDepositUsd: 0.4,
     alert: { level: 'warning', meter: 'daily', usedPct: 80, message: "You've used 80% of today's spending cap", action: 'raise_limit' },
   },
-  spendingKey: { status: 'missing', setup: { token: '0x20c0000000000000000000000000000000000000', limitUsd: 3, periodSeconds: 86400, expiryDays: 7, scopes: [{ address: '0x4d50500000000000000000000000000000000000' }] } },
+  spendingKey: { status: 'missing', address: null, expiresAt: null, onChainCaps: { dailyUsd: 0, weeklyUsd: 0 } },
   incomingUsd: 2,
-  networkFees: { paidBy: 'smartrouter', sponsoredPerDay: 20, usedToday: 0, relayUrl: '/relay' },
-  features: { crossChain: false, card: false, cashOut: false },
+  networkFees: { paidBy: 'smartrouter', sponsoredPerDay: 20, usedToday: 0 },
+  features: { crossChain: false, card: { via: 'privy', chain: 'monad', token: 'USDC' }, cashOut: false },
 };
 
 const join = vi.fn();
@@ -42,7 +41,7 @@ const activity = vi.fn();
 vi.mock('@/lib/api/endpoints', () => ({
   api: {
     waitlist: { join: (i: unknown) => join(i) as Promise<void> },
-    wallet: { get: () => getWallet() as Promise<unknown>, activity: () => activity() as Promise<unknown>, options: () => Promise.resolve({ deposit: [], send: [], card: null }) },
+    wallet: { get: () => getWallet() as Promise<unknown>, activity: () => activity() as Promise<unknown>, options: () => Promise.resolve({ deposit: [], send: [], card: { chain: 'monad', token: 'USDC', note: 'Buy USDC on Monad with a card.' } }) },
   },
 }));
 
@@ -55,7 +54,7 @@ function wrap(ui: React.ReactElement) {
   );
 }
 
-const user = { address: liveWallet.address, slider: 'balanced' as const, dailyLimitUsd: micro(2_000_000), weeklyLimitUsd: micro(10_000_000), autoFreeFallback: true, freeRemaining: null, id: 'user_1', email: 'a@b.co', loginMethod: 'email', usage: null, country: null, spendingKeyLimitUsd: null };
+const user = { address: liveWallet.address, slider: 'balanced' as const, dailyLimitUsd: micro(2_000_000), weeklyLimitUsd: micro(10_000_000), autoFreeFallback: true, freeRemaining: null, id: 'user_1', email: 'a@b.co', loginMethod: 'email', usage: null, country: null, vaultSetupNeeded: false, network: { chainId: 143, name: 'Monad' }, spendingKey: null };
 
 describe('WaitlistForm', () => {
   it('validates the email and posts email, country and interest', async () => {
@@ -93,20 +92,23 @@ describe('WalletSheet (GET /wallet)', () => {
     useAuthStore.getState().signedIn({ userId: 'u', address: liveWallet.address, email: 'a@b.co', loginMethod: 'email' });
     useUiStore.setState({ walletSheetOpen: true, walletView: 'main', sdkDialogOpen: false });
     getWallet.mockResolvedValue(walletSchema.parse(liveWallet));
-    activity.mockResolvedValue({ items: [{ id: 'a1', type: 'deposit', status: 'completed', amountUsd: 5, chain: 'tempo', token: 'pathUSD', counterparty: null, txHash: null, at: '2026-10-11T10:00:00.000Z' }], nextBefore: null });
+    activity.mockResolvedValue({ items: [{ id: 'a1', type: 'deposit', status: 'completed', amountUsd: 5, chain: 'monad', token: 'USDC', counterparty: null, txHash: null, at: '2026-10-11T10:00:00.000Z' }, { id: 'a2', type: 'to_ai_balance', status: 'completed', amountUsd: 1, chain: 'monad', token: 'USDC', counterparty: null, txHash: null, at: '2026-10-11T09:00:00.000Z' }], nextBefore: null });
   });
 
-  it('shows the balance card, locked money, both cap bars, the spending-key setup and activity', async () => {
+  it('shows the wallet balance, the AI balance, both cap bars, the paid-answer setup and activity', async () => {
     wrap(<WalletSheet user={user} onSignOut={vi.fn()} onSettings={vi.fn()} />);
     expect(await screen.findByText('$12.40')).toBeInTheDocument();
+    expect(screen.getByText(/USDC in your wallet · Monad/)).toBeInTheDocument();
     expect(screen.getByText('$2.00 arriving')).toBeInTheDocument();
-    expect(screen.getByText(/Locked for current chats/)).toHaveTextContent('$0.40');
-    expect(screen.getByRole('button', { name: 'Return now' })).toBeInTheDocument();
+    expect(screen.getByText(/AI balance:/)).toHaveTextContent('$0.40');
+    expect(screen.getByRole('button', { name: 'Return to wallet' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Get test funds' })).toBeNull();
     expect(screen.getByRole('progressbar', { name: 'Today' })).toHaveAttribute('aria-valuenow', '80');
     expect(screen.getByRole('progressbar', { name: 'This week' })).toHaveAttribute('aria-valuenow', '41');
     expect(screen.getByText('Set up paid answers once.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument();
     expect(await screen.findByText('Received $5.00')).toBeInTheDocument();
+    expect(screen.getByText('Moved $1.00 to AI balance')).toBeInTheDocument();
   });
 
   it('the refresh button next to the balance re-fetches GET /wallet', async () => {
@@ -119,12 +121,14 @@ describe('WalletSheet (GET /wallet)', () => {
     expect(getWallet.mock.calls.length).toBe(calls + 1);
   });
 
-  it('Deposit opens the Tempo tab with the address (testnet: no other chains)', async () => {
+  it('Deposit opens the Monad tab with the address and offers moving USDC into the AI balance', async () => {
     wrap(<WalletSheet user={user} onSignOut={vi.fn()} onSettings={vi.fn()} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Deposit' }));
     expect(useUiStore.getState().walletView).toBe('deposit');
-    expect(await screen.findByRole('tab', { name: 'Tempo' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.queryByRole('tab', { name: 'Other chain' })).toBeNull();
+    expect(await screen.findByRole('tab', { name: 'Monad' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('tab', { name: 'Card' })).toBeInTheDocument();
     expect(screen.getByText(liveWallet.address)).toBeInTheDocument();
+    expect(screen.getByText(liveWallet.token.address)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Move \$\d+\.\d{2} to AI balance/ })).toBeEnabled();
   });
 });
