@@ -1,13 +1,13 @@
 import { z } from 'zod';
 
 /**
- * Public runtime config (SmartRouter Frontend Architecture, "Vercel environment variables").
+ * Public runtime config (Monad handoff, "Required production configuration").
  *
- * The browser needs exactly five public values (SmartRouter Frontend Handover, "Environments and
- * config"): the API base URL, the Tempo network, its chain id, a public RPC URL and the Privy app
- * id. The frontend needs no secrets at all. Everything else here
- * is optional tooling (Sentry, feature flags, the offline mock switch for development and tests).
- * Provider keys, the hot wallet and the operator key never exist in this bundle.
+ * SmartRouter runs on Monad mainnet (chain 143). The browser needs four public values: the API
+ * base URL, the chain id, a public Monad RPC URL and the Privy app id (`smartmon`). The frontend
+ * needs no secrets at all. Tempo is backend infrastructure only (the provider-payment hot wallet),
+ * so nothing Tempo-related is configured here. Everything else is optional tooling (Sentry,
+ * feature flags, the offline mock switch for development and tests).
  *
  * Each key is referenced literally so Next.js can inline it into the client bundle.
  */
@@ -16,40 +16,30 @@ const booleanFlag = z
   .optional()
   .transform((v) => v === '1' || v === 'true');
 
-/** PDF: Tempo mainnet = chain 4217 (`tempo`), Moderato testnet = chain 42431 (`moderato`). */
-export const CHAIN_IDS = { tempo: 4217, moderato: 42431 } as const;
-export const DEFAULT_RPC_URLS = {
-  tempo: 'https://rpc.tempo.xyz',
-  moderato: 'https://rpc.moderato.tempo.xyz',
-} as const;
+/** Monad handoff: mainnet is chain 143 (`monad` in `viem/chains`). */
+export const MONAD_CHAIN_ID = 143;
+export const DEFAULT_RPC_URL = 'https://rpc.monad.xyz';
+export const DEFAULT_EXPLORER_URL = 'https://monadscan.com';
 
-const schema = z
-  .object({
-    apiUrl: z.string().url().transform((u) => u.replace(/\/+$/, '')),
-    network: z.enum(['tempo', 'moderato']),
-    chainId: z.coerce.number().int().positive().optional(),
-    rpcUrl: z.string().url().optional(),
-    /** Handover: the same Privy app for testnet and mainnet. Public — never the app secret. */
-    privyAppId: z.string().min(1),
-    objectStorageHost: z.string().optional().transform((s) => s ?? ''),
-    sentryDsn: z.string().optional().transform((s) => s ?? ''),
-    flagCompare: booleanFlag,
-    flagMusic: booleanFlag,
-    mock: booleanFlag,
-  })
-  .transform((e) => ({
-    ...e,
-    chainId: e.chainId ?? CHAIN_IDS[e.network],
-    rpcUrl: e.rpcUrl ?? DEFAULT_RPC_URLS[e.network],
-  }));
+const schema = z.object({
+  apiUrl: z.string().url().transform((u) => u.replace(/\/+$/, '')),
+  chainId: z.coerce.number().int().positive().default(MONAD_CHAIN_ID),
+  rpcUrl: z.string().url().default(DEFAULT_RPC_URL),
+  /** Monad handoff: Privy app `smartmon`. Public — never the app secret. */
+  privyAppId: z.string().min(1),
+  objectStorageHost: z.string().optional().transform((s) => s ?? ''),
+  sentryDsn: z.string().optional().transform((s) => s ?? ''),
+  flagCompare: booleanFlag,
+  flagMusic: booleanFlag,
+  mock: booleanFlag,
+});
 
 export type Env = z.output<typeof schema>;
 
 const raw = {
   apiUrl: process.env.NEXT_PUBLIC_API_URL,
-  network: process.env.NEXT_PUBLIC_TEMPO_NETWORK,
-  chainId: process.env.NEXT_PUBLIC_CHAIN_ID,
-  rpcUrl: process.env.NEXT_PUBLIC_RPC_URL,
+  chainId: process.env.NEXT_PUBLIC_CHAIN_ID || undefined,
+  rpcUrl: process.env.NEXT_PUBLIC_RPC_URL || undefined,
   privyAppId: process.env.NEXT_PUBLIC_PRIVY_APP_ID,
   objectStorageHost: process.env.NEXT_PUBLIC_OBJECT_STORAGE_HOST,
   sentryDsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
@@ -74,6 +64,3 @@ function camelToScreaming(key: string): string {
 }
 
 export const env: Env = parseEnv(raw);
-
-/** Moderato is the staging/testnet network: real on-chain payments with faucet pathUSD, mock model text. */
-export const isTestnet = env.network === 'moderato';
