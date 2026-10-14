@@ -35,7 +35,7 @@ export function getPrivyWallet(address: string): EmbeddedWallet | null {
 }
 
 /** A recognisable stand-in signature for `NEXT_PUBLIC_MOCK=1` (MSW never verifies it). */
-export const MOCK_SIGNATURE = `0x${'11'.repeat(65)}` as Hex;
+export const MOCK_SIGNATURE: Hex = `0x${'11'.repeat(65)}`;
 
 /** Sign EIP-712 typed data with the embedded wallet for `address`, on Monad. */
 export async function signWithPrivy(address: string, typed: TypedData): Promise<Hex> {
@@ -53,5 +53,5 @@ export async function signWithPrivy(address: string, typed: TypedData): Promise<
     types: typed.types,
     primaryType: typed.primaryType,
     message: toSignable(typed),
-  } as never);
+  });
 }
