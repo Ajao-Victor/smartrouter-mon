@@ -38,7 +38,7 @@ export function toUsd(m: MicroUsd): number {
 }
 
 /**
- * Serialise micro-USD for the API / mppx as a plain decimal string without float noise
+ * Serialise micro-USD for the API as a plain decimal string without float noise
  * (`2_000_000` → "2", `900` → "0.0009").
  */
 export function toUsdString(m: MicroUsd): string {
