@@ -39,7 +39,15 @@ Items are ordered from blocking to nice-to-have.
 
 ## 4. Deposits
 
-11. **Aurora (other chains).** `/wallet/options` returns an `aurora` recipe and the API proxies `POST /aurora/*`, but `Monad.docx` doesn't describe the client flow: which SDK, request bodies, how to track an execution. For now the Deposit panel offers only the Monad address and card. Please document the Aurora create, track and credit flow if we should ship it.
+11. **Aurora (other chains)** is now built on the frontend. The Deposit panel has three tabs: Monad, Other chains and Card.
+    - It uses `@aurora-is-near/intents-connect` with the `/wallet/options → aurora` recipe as-is.
+    - Create calls go through `POST /aurora/*` with `X-Session-Token`. Other calls go straight to `aurora.baseUrl`; the CSP allows `https://*.aurora.dev`.
+    - The origin wallet is the Privy embedded wallet. It signs with `personal_sign` (erc191). The user then sends USDC to the one-time deposit address from any wallet (`depositViaWallet: false`).
+    - Only EVM source chains are shown. Solana needs a Solana wallet, which we don't have.
+    - Please confirm:
+      - `AURORA_API_URL` is on an `*.aurora.dev` host;
+      - `available` is `true` in production;
+      - the worker credits the AI balance and flips the activity row from `pending` to `completed`.
 12. **Deposit authorization TTL** is 1 hour (`validBefore`). The frontend signs right away, so this is fine. Just flagging that a slow signature (Privy modal left open) gets a `VALIDATION_FAILED` from the relay rather than a dedicated code.
 13. **"Funds arrived" detection** compares `GET /wallet → main.balanceUsd` every 10 s. If Envio becomes available (`/health` shows `envio: false` today), a push or SSE for incoming USDC would be better.
 
