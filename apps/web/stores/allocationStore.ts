@@ -3,44 +3,51 @@ import { create } from 'zustand';
 import type { SessionSummary, SessionsCurrent } from '@/lib/api/types';
 import { clampMicro, micro, type MicroUsd } from '@/lib/money';
 
-export type AllocationStatus = 'none' | 'open' | 'used' | 'toppingUp' | 'closing' | 'closed';
+/**
+ * The AI balance: the user's account in SmartRouterVault on Monad (`GET /sessions/current` →
+ * `session`). Answers are paid from it with spending-key vouchers; the user tops it up from the
+ * USDC in their wallet. `none` = no vault account yet (or nothing ever deposited).
+ */
+export type AllocationStatus = 'none' | 'open' | 'used';
 
-/** PDF low-balance alert: below ~10% of the deposit (or below the next quote's price). */
+/** Low-balance alert: below ~10% of what was deposited. */
 export const LOW_ALLOCATION_PCT = 0.1;
 
 export interface AllocationState {
   channelId: string | null;
+  /** USDC held for the user in the vault. */
   depositUsd: MicroUsd;
+  /** Answered but not yet settled. */
   spentUsd: MicroUsd;
+  /** Spendable now. */
   remainingUsd: MicroUsd;
   requests: number;
-  /** The backend's suggested deposit (defaults to the user's allocation). */
+  /** The backend's suggested top-up (capped by what's left of today's and this week's caps). */
   suggestedDepositUsd: MicroUsd;
   status: AllocationStatus;
   /** Last charge applied — drives the header drain animation. */
   lastChargeUsd: MicroUsd;
-  /** Handover: `paidRunsEnabled: false` → hide paid models. */
+  /** `paidRunsEnabled: false` → hide paid models. */
   paidRunsEnabled: boolean;
-  /** `network.chainId` from `/sessions/current` — the chain the wallet client is built on. */
+  /** `network.chainId` (Monad, 143). */
   chainId: number | null;
-  /** `network.token` — the escrow token (pathUSD on Moderato, USDC.e on mainnet). */
+  /** `network.token` — Circle USDC on Monad. */
   token: string | null;
-  /** Deposit the user picked in the deposit dialog; null = `suggestedDepositUsd`. */
-  chosenDepositUsd: MicroUsd | null;
+  /** `network.vault` — SmartRouterVault. */
+  vault: string | null;
+  /** Whether the spending key and caps are registered in the vault. */
+  setupDone: boolean;
+  /** The next voucher signs this + the quoted price (micro-USD, decimal string). */
+  nextVoucherBaseMicro: string | null;
 }
 
 export interface AllocationActions {
-  /** Mirror `GET /sessions/current` (PDF: refresh it after each `done` event). */
+  /** Mirror `GET /sessions/current` (refreshed after each `done` event and top-up). */
   hydrate: (current: SessionsCurrent | null) => void;
   /** `meta.remainingUsd` on a paid run — the freshest number the server has. */
   setRemaining: (remainingUsd: MicroUsd) => void;
   /** Apply a `done.chargedUsd` optimistically until the session refetches. */
   applyCharge: (chargedUsd: MicroUsd) => void;
-  /** The deposit the next manager opens with (Handover: `maxDeposit`). */
-  chooseDeposit: (amountUsd: MicroUsd | null) => void;
-  beginTopUp: () => void;
-  beginClose: () => void;
-  settle: () => void;
   reset: () => void;
 }
 
@@ -52,17 +59,19 @@ const initialState: AllocationState = {
   spentUsd: zero,
   remainingUsd: zero,
   requests: 0,
-  suggestedDepositUsd: micro(2_000_000),
+  suggestedDepositUsd: micro(1_000_000),
   status: 'none',
   lastChargeUsd: zero,
   paidRunsEnabled: true,
   chainId: null,
   token: null,
-  chosenDepositUsd: null,
+  vault: null,
+  setupDone: false,
+  nextVoucherBaseMicro: null,
 };
 
 function statusFor(session: SessionSummary): AllocationStatus {
-  if (session.status === 'closed') return 'closed';
+  if (session.depositUsd <= 0 && session.remainingUsd <= 0) return 'none';
   return session.remainingUsd <= 0 ? 'used' : 'open';
 }
 
@@ -86,10 +95,13 @@ export const useAllocationStore = create<AllocationState & AllocationActions>()(
       paidRunsEnabled: current.paidRunsEnabled,
       chainId: current.network?.chainId ?? prev.chainId,
       token: current.network?.token ?? prev.token,
+      vault: current.network?.vault ?? prev.vault,
+      setupDone: s?.setupDone ?? false,
+      nextVoucherBaseMicro: s?.nextVoucherBaseMicro ?? null,
     }));
   },
   setRemaining: (remainingUsd) => {
-    set((s) => ({ remainingUsd, status: s.status === 'closed' ? 'closed' : remainingUsd <= 0 ? 'used' : s.status === 'none' ? 'open' : s.status }));
+    set({ remainingUsd, status: remainingUsd <= 0 ? 'used' : 'open' });
   },
   applyCharge: (chargedUsd) => {
     set((s) => {
@@ -99,21 +111,9 @@ export const useAllocationStore = create<AllocationState & AllocationActions>()(
         spentUsd: micro(s.spentUsd + chargedUsd),
         requests: s.requests + 1,
         lastChargeUsd: chargedUsd,
-        status: s.status === 'closed' ? 'closed' : remaining <= 0 ? 'used' : 'open',
+        status: remaining <= 0 ? 'used' : 'open',
       };
     });
-  },
-  chooseDeposit: (chosenDepositUsd) => {
-    set({ chosenDepositUsd });
-  },
-  beginTopUp: () => {
-    set({ status: 'toppingUp' });
-  },
-  beginClose: () => {
-    set({ status: 'closing' });
-  },
-  settle: () => {
-    set((s) => ({ status: s.channelId ? (s.remainingUsd <= 0 ? 'used' : 'open') : 'none' }));
   },
   reset: () => {
     set({ ...initialState });
@@ -128,11 +128,8 @@ export const selectIsLow = (s: AllocationState): boolean => s.status === 'open' 
 
 export const selectIsUsed = (s: AllocationState): boolean => s.status === 'used';
 
-/** The deposit a new session opens with: the user's choice, else `suggestedDepositUsd`. */
-export const selectNextDeposit = (s: AllocationState): MicroUsd => s.chosenDepositUsd ?? s.suggestedDepositUsd;
-
-/** The next run would pass the deposit (show the deposit dialog / Continue free before contacting the server). */
+/** The AI balance covers this price (nothing is deposited automatically on Monad). */
 export const selectCanAfford =
   (priceUsd: MicroUsd) =>
   (s: AllocationState): boolean =>
-    s.status === 'none' || s.status === 'closed' ? priceUsd <= selectNextDeposit(s) : priceUsd <= s.remainingUsd;
+    priceUsd <= s.remainingUsd;
