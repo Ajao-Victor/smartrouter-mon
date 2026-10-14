@@ -80,7 +80,7 @@ export default function HomePage() {
         </main>
         <footer className="flex flex-col gap-2 border-t border-line py-8 text-xs text-text-2 sm:flex-row sm:items-center sm:justify-between">
           <Attribution />
-          <p>Models available via MPP · Fees sponsored on Tempo · You only spend USDC.e</p>
+          <p>Pay per answer in USDC on Monad · Gas sponsored · AI providers paid via MPP</p>
         </footer>
       </div>
     </>
