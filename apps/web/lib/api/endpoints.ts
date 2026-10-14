@@ -115,9 +115,9 @@ export function pollPath(pollUrl: string): string {
 }
 
 export const feedback = {
-  /** `POST /feedback { requestId, rating: 1 | -1, signature? }` (signature: EIP-712 Rating by the spending key). */
+  /** `POST /feedback { requestId, rating: 1 | -1 }`. */
   rate: (input: FeedbackInput) => apiFetch('/feedback', { method: 'POST', body: input }),
-  /** `POST /compare/vote { compareGroup, winnerRequestId, prompt, signature? }` (EIP-712 Vote by the spending key). */
+  /** `POST /compare/vote { compareGroup, winnerRequestId, prompt }`. */
   compareVote: (input: CompareVoteInput) => apiFetch('/compare/vote', { method: 'POST', body: input }),
 };
 
@@ -167,19 +167,6 @@ export const wallet = {
   returnLocked: () => apiFetch<{ returnedUsd: number; settledUsd?: number; txHash?: string | null; skipped?: string[] }>('/wallet/locked/return', { method: 'POST', body: {} }),
 };
 
-/** Public on-chain side (SmartRouterLedger): leaderboard and the router's decision log. */
-export const ledger = {
-  /** `GET /leaderboard?taskType=` — models ranked by delivered answers, thumbs and Compare wins. */
-  leaderboard: (taskType?: TaskType, signal?: AbortSignal) =>
-    apiFetch<{ taskType: TaskType | null; source: string; ledger: string | null; models: { modelId: string; label: string; taskType: string; delivered: number; failed: number; up: number; down: number; compareWins: number; compareLosses: number; score: number }[] }>(
-      taskType ? `/leaderboard?taskType=${encodeURIComponent(taskType)}` : '/leaderboard',
-      sig(signal),
-    ),
-  /** `GET /requests/:id/route` — why the router picked this model; `verified` = its hash matches the on-chain receipt. */
-  route: (requestId: string, signal?: AbortSignal) =>
-    apiFetch<{ requestId: string; routeHash: string | null; log: unknown; verified: boolean; ledgerTx: string | null; explorerUrl: string | null }>(`/requests/${encodeURIComponent(requestId)}/route`, sig(signal)),
-};
-
 /**
  * File uploads into chats: `POST /uploads` → PUT the bytes to `putUrl` (straight to storage) →
  * `POST /uploads/:id/complete` (text pulled out) → `attachmentIds` on `POST /chats/:id/quote`.
@@ -193,5 +180,5 @@ const uploads = {
   remove: (uploadId: string) => apiFetch<{ ok: boolean }>(`/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
 };
 
-export const api = { auth, me, catalog, chats, sessions, requests, feedback, waitlist, wallet, ledger, uploads };
+export const api = { auth, me, catalog, chats, sessions, requests, feedback, waitlist, wallet, uploads };
 export type Api = typeof api;
