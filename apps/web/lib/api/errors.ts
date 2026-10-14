@@ -10,6 +10,7 @@ export type UiErrorAction =
   | { kind: 'sign_in' }
   | { kind: 'wrong_wallet' }
   | { kind: 'top_up'; freeFallback: FreeFallback }
+  | { kind: 'setup' }
   | { kind: 'requote' }
   | { kind: 'ignore' }
   | { kind: 'cooldown'; seconds: number }
@@ -37,6 +38,8 @@ export function toUiAction(err: unknown): UiErrorAction {
       return { kind: 'sign_in' };
     case 'FORBIDDEN':
       return { kind: 'wrong_wallet' };
+    case 'SETUP_REQUIRED':
+      return { kind: 'setup' };
     case 'ALLOCATION_EXHAUSTED':
     case 'PAYMENT_REQUIRED': {
       const raw = detail(err, 'freeFallback');
@@ -73,9 +76,11 @@ export function describeAction(a: UiErrorAction): string {
     case 'sign_in':
       return 'Sign in to continue';
     case 'wrong_wallet':
-      return 'This payment session belongs to another wallet. Sign out and back in with the paying wallet.';
+      return 'This belongs to another wallet. Sign out and back in with your SmartRouter wallet.';
     case 'top_up':
-      return 'Your balance is used up — Top up or Continue free';
+      return 'Your AI balance is too low — Top up or Continue free';
+    case 'setup':
+      return 'Set up paid answers once (one signature, no gas)';
     case 'requote':
       return 'Getting a fresh quote';
     case 'ignore':
