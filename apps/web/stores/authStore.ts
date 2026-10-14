@@ -9,7 +9,7 @@ export type AuthStatus = 'unknown' | 'signed_out' | 'signing_in' | 'signed_in';
 
 export interface AuthAccount {
   userId: string | null;
-  /** The user's Tempo wallet (Privy embedded wallet). */
+  /** The Privy embedded wallet on Monad returned by `/auth/privy` (the one that signs). */
   address: string;
   email: string | null;
   loginMethod: string | null;
