@@ -57,7 +57,7 @@ describe('Sheet', () => {
     });
   });
 
-  it('never mounts while a Tempo SDK dialog is open', () => {
+  it('never mounts while a wallet SDK dialog is open', () => {
     useUiStore.setState({ sdkDialogOpen: true });
     render(<Harness />);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
