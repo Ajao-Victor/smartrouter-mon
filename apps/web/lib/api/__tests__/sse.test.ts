@@ -1,7 +1,7 @@
 import { parseFrames, runStream, WATCHDOG_MS } from '../sse';
 
 const fetchSpy = vi.fn<(input: string | URL, init?: RequestInit) => Promise<Response>>();
-vi.mock('@/lib/tempo/session', () => ({
+vi.mock('@/lib/monad/payments', () => ({
   paidFetch: (input: string | URL, init?: RequestInit) => fetchSpy(input, init),
 }));
 
@@ -80,12 +80,14 @@ describe('runStream', () => {
   });
 
   it('resolves pending and error events', async () => {
+    // Paid runs need the signing wallet's address (the voucher's `user`).
+    const ADDRESS = `0x${'ab'.repeat(20)}`;
     fetchSpy.mockResolvedValueOnce(streamOf(['event: pending\ndata: {"requestId":"r2","pollUrl":"/requests/r2"}\n\n']));
-    expect(await runStream(body, { free: false }, {})).toEqual({ kind: 'pending', data: { requestId: 'r2', pollUrl: '/requests/r2' } });
+    expect(await runStream(body, { free: false, address: ADDRESS }, {})).toEqual({ kind: 'pending', data: { requestId: 'r2', pollUrl: '/requests/r2' } });
 
     fetchSpy.mockResolvedValueOnce(streamOf(['event: error\ndata: {"code":"PROVIDER_UNAVAILABLE","message":"twice","refunded":true,"refundedUsd":0.0009,"freeRerun":{"available":true,"modelId":"free:llama-3.1-8b"}}\n\n']));
     const onError = vi.fn();
-    const out = await runStream(body, { free: false }, { onError });
+    const out = await runStream(body, { free: false, address: ADDRESS }, { onError });
     expect(out.kind).toBe('error');
     expect((out as { data: { code: string; refundedUsd: number } }).data).toMatchObject({ code: 'PROVIDER_UNAVAILABLE', refundedUsd: 900 });
     expect(onError).toHaveBeenCalled();
