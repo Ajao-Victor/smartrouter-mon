@@ -279,7 +279,7 @@ export type AiBalance = z.output<typeof aiBalanceSchema>;
 
 /** `GET /wallet` — the Wallet panel in one call. */
 export const walletSchema = z.preprocess(
-  (v) => (v && typeof v === 'object' && !('ai' in v) && 'locked' in v ? { ...v, ai: (v as { locked: unknown }).locked } : v),
+  (v) => (v && typeof v === 'object' && !('ai' in v) && 'locked' in v ? { ...v, ai: (v).locked } : v),
   z.object({
     address: z.string(),
     network: z
