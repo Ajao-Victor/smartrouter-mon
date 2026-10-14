@@ -24,7 +24,7 @@ export interface UsageBannerProps {
  *
  * | level     | shown at                                   | style                                   |
  * | warning   | 75% of a cap                               | thin bar above the composer, dismissible|
- * | critical  | 90% of a cap, or can't fund the next deposit| same bar, stronger colour, not dismissible|
+ * | critical  | 90% of a cap, or can't top up the AI balance| same bar, stronger colour, not dismissible|
  * | exhausted | cap reached, or the wallet is empty        | blocks paid Send; offers the free model |
  */
 export function UsageBanner({ onRaiseCap, onAddFunds, onUseFree, className }: UsageBannerProps) {
