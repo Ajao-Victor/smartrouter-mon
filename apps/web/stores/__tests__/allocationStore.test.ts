@@ -5,18 +5,18 @@ import { selectCanAfford, selectIsLow, selectIsUsed, selectRemainingPct, useAllo
 
 const current = (over: Partial<NonNullable<SessionsCurrent['session']>> | null = {}): SessionsCurrent => ({
   suggestedDepositUsd: micro(2_000_000),
-  paidRunsEnabled: true, usage: null, network: { name: null, chainId: 42431, token: null, recipient: null, operator: null },
+  paidRunsEnabled: true, usage: null, network: { name: 'Monad', chainId: 143, token: '0x754704bc059f8c67012fed69bc8a327a5aafb603', vault: '0x88191be828c5ce6bda1c7796fb32450a10c3e54c', ledger: null, operator: null, explorer: null },
   session:
     over === null
       ? null
-      : { depositUsd: micro(2_000_000), spentUsd: micro(0), remainingUsd: micro(2_000_000), requests: 0, channelId: 'ch_1', status: 'open', openedAt: null, ...over },
+      : { depositUsd: micro(2_000_000), spentUsd: micro(0), remainingUsd: micro(2_000_000), requests: 0, channelId: 'ch_1', status: 'open', openedAt: null, nextVoucherBaseMicro: '0', setupDone: true, signer: null, signerExpiresAt: null, ...over },
 });
 
 beforeEach(() => {
   useAllocationStore.getState().reset();
 });
 
-describe('allocationStore (mirrors GET /sessions/current)', () => {
+describe('allocationStore (the Monad AI balance, from GET /sessions/current)', () => {
   it('hydrates from a $2 session (PDF default)', () => {
     useAllocationStore.getState().hydrate(current());
     const s = useAllocationStore.getState();
@@ -26,12 +26,21 @@ describe('allocationStore (mirrors GET /sessions/current)', () => {
     expect(selectRemainingPct(s)).toBe(1);
   });
 
-  it('has no session before the first paid run and can afford up to the suggested deposit', () => {
+  it('has no AI balance before the first top-up and can afford nothing paid (no automatic deposit on Monad)', () => {
     useAllocationStore.getState().hydrate(current(null));
     const s = useAllocationStore.getState();
     expect(s.status).toBe('none');
-    expect(selectCanAfford(micro(1_000))(s)).toBe(true);
-    expect(selectCanAfford(micro(2_000_001))(s)).toBe(false);
+    expect(s.setupDone).toBe(false);
+    expect(selectCanAfford(micro(1_000))(s)).toBe(false);
+  });
+
+  it('keeps the vault, setup state and the next voucher base', () => {
+    useAllocationStore.getState().hydrate(current({ nextVoucherBaseMicro: '12000' }));
+    const s = useAllocationStore.getState();
+    expect(s.chainId).toBe(143);
+    expect(s.vault).toBe('0x88191be828c5ce6bda1c7796fb32450a10c3e54c');
+    expect(s.setupDone).toBe(true);
+    expect(s.nextVoucherBaseMicro).toBe('12000');
   });
 
   it('applies charges from done events, flags low below 10%, then used', () => {
@@ -63,21 +72,12 @@ describe('allocationStore (mirrors GET /sessions/current)', () => {
     expect(selectCanAfford(micro(1_100))(s)).toBe(false);
   });
 
-  it('top-up and close cycles update status', () => {
+  it('a top-up reopens a used balance', () => {
     useAllocationStore.getState().hydrate(current({ spentUsd: micro(2_000_000), remainingUsd: micro(0) }));
     expect(useAllocationStore.getState().status).toBe('used');
-    useAllocationStore.getState().beginTopUp();
-    expect(useAllocationStore.getState().status).toBe('toppingUp');
     useAllocationStore.getState().hydrate(current({ depositUsd: micro(4_000_000), spentUsd: micro(2_000_000), remainingUsd: micro(2_000_000) }));
     expect(useAllocationStore.getState().status).toBe('open');
-    useAllocationStore.getState().beginClose();
-    expect(useAllocationStore.getState().status).toBe('closing');
     useAllocationStore.getState().reset();
     expect(useAllocationStore.getState().status).toBe('none');
-  });
-
-  it('closed sessions report closed', () => {
-    useAllocationStore.getState().hydrate(current({ status: 'closed' }));
-    expect(useAllocationStore.getState().status).toBe('closed');
   });
 });
