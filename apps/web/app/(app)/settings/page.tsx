@@ -2,13 +2,13 @@
 
 import { ExternalLink } from 'lucide-react';
 
-import { env, isTestnet } from '@/lib/env';
+import { env } from '@/lib/env';
 import { addressUrl, shortHex } from '@/lib/explorer';
 
 import { useAuth } from '@/hooks/useAuth';
 import { useMe } from '@/hooks/useMe';
 import { useSettings } from '@/hooks/useSettings';
-import { useRevokeSpendingKey, useWallet } from '@/hooks/useWallet';
+import { useForgetSpendingKey, useWallet } from '@/hooks/useWallet';
 import { toast } from '@/stores/toastStore';
 import { useUiStore } from '@/stores/uiStore';
 
@@ -37,7 +37,7 @@ function Settings() {
   const forceReduced = useUiStore((s) => s.forceReducedMotion);
   const setForceReduced = useUiStore((s) => s.setForceReducedMotion);
   const wallet = useWallet();
-  const revoke = useRevokeSpendingKey();
+  const forget = useForgetSpendingKey();
 
   if (me.isPending || !me.data) {
     return (
@@ -77,19 +77,22 @@ function Settings() {
         <section className="space-y-2 rounded-lg bg-bg-1 p-4 shadow-hairline" aria-label="Spending key">
           <p className="num text-2xs tracking-wider-ui text-text-2 uppercase">Spending key</p>
           <SpendingKeyStatus wallet={wallet.data} />
-          {wallet.data.spendingKey?.status === 'active' && (
+          {(wallet.data.spendingKey?.status === 'active' || wallet.data.spendingKey?.status === 'expiring') && (
             <button
               type="button"
-              disabled={revoke.isPending}
+              disabled={forget.isPending}
               onClick={() => {
-                revoke.mutate(wallet.data);
+                forget.mutate(wallet.data);
               }}
               className="rounded-lg border border-signal/40 px-3 py-1.5 text-sm text-signal transition-colors hocus:bg-signal/10 disabled:opacity-60"
             >
-              {revoke.isPending ? 'Revoking…' : 'Revoke spending key'}
+              {forget.isPending ? 'Removing…' : 'Remove key from this browser'}
             </button>
           )}
-          <p className="text-xs text-text-2">The key lives only in this browser and can spend only into Tempo&apos;s payment contract, up to your daily cap. It expires after 7 days.</p>
+          <p className="text-xs text-text-2">
+            The key lives only in this browser. It can only pay for answers from your AI balance in the SmartRouter vault on Monad, within your caps, and it expires on its own. Changing your caps
+            re-registers it with one signature.
+          </p>
         </section>
       )}
 
@@ -115,7 +118,7 @@ function Settings() {
           )}
         </p>
         <p className="text-xs text-text-2">
-          Your Tempo wallet, created by Privy when you signed in. Tempo {isTestnet ? 'Moderato testnet (pathUSD)' : 'mainnet (USDC.e)'}, chain {String(env.chainId)}.
+          Your wallet, created by Privy when you signed in. Monad mainnet (Circle USDC), chain {String(env.chainId)}. SmartRouter pays the network fees, so you never need MON.
         </p>
       </section>
 
