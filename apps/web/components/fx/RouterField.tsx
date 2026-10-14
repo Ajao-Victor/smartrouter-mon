@@ -15,7 +15,7 @@ const RouterFieldScene = dynamic(() => import('@/components/fx/RouterFieldScene'
 /**
  * Full-bleed backdrop (design.md §2 RouterField): a noise-displaced point field with
  * lit lanes when WebGL is available, else the CSS drifting-glow fallback. Pauses while
- * a Tempo SDK dialog is open or the tab is hidden. Always behind content (z-field).
+ * a wallet SDK dialog is open or the tab is hidden. Always behind content (z-field).
  */
 export function RouterField() {
   const reduced = useReducedMotionSafe();
