@@ -13,8 +13,8 @@ import { z } from 'zod';
 import { ApiError, apiRequest, errorFromFetchFailure, errorFromResponse, isApiError } from '@/lib/api/client';
 import { RUN_PATH } from '@/lib/api/endpoints';
 import { fileSchema, usageSchema, usdSchema, type RunInput } from '@/lib/api/types';
-import { micro, type MicroUsd } from '@/lib/money';
 import { toPaymentError } from '@/lib/monad/paymentErrors';
+import { micro, type MicroUsd } from '@/lib/money';
 
 export const HEARTBEAT_MS = 15_000;
 /** PDF: answers can take over a minute to start; heartbeats keep the connection open. */
