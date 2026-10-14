@@ -229,7 +229,7 @@ export type DepositAuthorization = z.output<typeof depositAuthorizationSchema>;
 /** `details.voucher` on 402 PAYMENT_REQUIRED: the Voucher to sign with the spending key. */
 export const voucherChallengeSchema = typedDataSchema.extend({
   primaryType: z.literal('Voucher'),
-  message: z.object({ user: z.string(), cumulativeAmount: z.union([z.string(), z.number()]).transform(String) }).passthrough(),
+  message: z.object({ user: z.string(), cumulativeAmount: z.union([z.string(), z.number()]).transform(String) }).catchall(z.union([z.string(), z.number(), z.null()])),
   header: z.string().default('x-smartrouter-voucher'),
 });
 export type VoucherChallenge = z.output<typeof voucherChallengeSchema>;
