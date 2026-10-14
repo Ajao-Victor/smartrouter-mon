@@ -1,12 +1,16 @@
 /**
- * MSW handlers for the LIVE contract ("SmartRouter Frontend Handover", Oct 11 2026). Routes have no
- * `/api` prefix, money is USD decimals, errors are `{ code, message, details? }`, `/run` streams
- * SSE (`meta`, `delta`, heartbeat comments, `fallback`, `pending`, `done`, `error`).
+ * MSW handlers for SmartRouter on Monad (Monad handoff + the backend's wallet/run routes). Routes
+ * have no `/api` prefix, money is USD decimals, errors are `{ code, message, details? }`, `/run`
+ * streams SSE (`meta`, `delta`, heartbeat comments, `fallback`, `pending`, `done`, `error`). Paid
+ * runs play the real protocol: 409 SETUP_REQUIRED until the vault setup is done, 402
+ * ALLOCATION_EXHAUSTED when the AI balance is short, then the 402 PAYMENT_REQUIRED voucher
+ * challenge answered with `X-SmartRouter-Voucher`. Signatures are not verified.
  * Prompt hooks for demos: `[fallback]`, `[fail]`, `[pending]`, `[slow]`.
  */
 import { delay, http, HttpResponse } from 'msw';
 
 import type { SliderPreset, TaskType } from '@/lib/api/types';
+import { getContracts } from '@/lib/monad/contracts';
 
 import { FREE_MODEL_ID, SAMPLE_FILES, SAMPLE_REPLY, mockModels } from './fixtures';
 import { sseStream, tokenize, type SseEvent } from './sse';
@@ -15,11 +19,11 @@ import {
   charge,
   classify,
   createChat,
+  depositToAi,
   FREE_LIMIT,
   makeQuote,
   modelById,
   nextId,
-  openSession,
   optionsFor,
   pollRequest,
   publicChat,
@@ -29,6 +33,7 @@ import {
   dailySpentUsd,
   MOCK_SEND_CODE,
   MOCK_STORAGE,
+  mockTxHash,
   mockUploads,
   mockWallet,
   usage,
@@ -50,6 +55,92 @@ async function body<T>(req: Request): Promise<T> {
 }
 
 const sliderOf = (v: unknown): SliderPreset => (v === 'cheapest' || v === 'best' ? v : 'balanced');
+
+/* ------------------------------ Monad typed data ------------------------------ */
+
+const CHAIN_ID = 143;
+const EXPLORER = 'https://monadscan.com';
+const micro = (usd: number) => BigInt(Math.round(usd * 1e6));
+const contracts = () => getContracts();
+const vaultDomain = () => ({ name: 'SmartRouterVault', version: '1', chainId: CHAIN_ID, verifyingContract: contracts().vault });
+const usdcDomain = () => ({ name: 'USDC', version: '2', chainId: CHAIN_ID, verifyingContract: contracts().usdc });
+const nonce32 = () => `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`;
+const ERC3009 = (name: string) => ({
+  [name]: [
+    { name: 'from', type: 'address' },
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'validAfter', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' },
+    { name: 'nonce', type: 'bytes32' },
+  ],
+});
+
+function setupTyped(signer: string | null, dailyUsd?: number, weeklyUsd?: number) {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    domain: vaultDomain(),
+    types: {
+      Setup: [
+        { name: 'user', type: 'address' },
+        { name: 'signer', type: 'address' },
+        { name: 'signerExpiry', type: 'uint64' },
+        { name: 'dailyCap', type: 'uint128' },
+        { name: 'weeklyCap', type: 'uint128' },
+        { name: 'nonce', type: 'uint64' },
+        { name: 'deadline', type: 'uint256' },
+      ],
+    },
+    primaryType: 'Setup',
+    message: {
+      user: state.user.address,
+      signer,
+      signerExpiry: String(now + 7 * 86_400),
+      dailyCap: micro(dailyUsd ?? state.user.dailyLimitUsd).toString(),
+      weeklyCap: micro(weeklyUsd ?? state.user.weeklyLimitUsd).toString(),
+      nonce: '0',
+      deadline: String(now + 900),
+    },
+    submit: 'POST /wallet/setup { ...message, signature }',
+  };
+}
+
+function voucherTyped(priceUsd: number) {
+  return {
+    domain: vaultDomain(),
+    types: {
+      Voucher: [
+        { name: 'user', type: 'address' },
+        { name: 'cumulativeAmount', type: 'uint256' },
+      ],
+    },
+    primaryType: 'Voucher',
+    message: { user: state.user.address, cumulativeAmount: (mockWallet.voucherTotalMicro + micro(priceUsd)).toString() },
+    header: 'x-smartrouter-voucher',
+  };
+}
+
+function readVoucher(raw: string | null): { cumulativeAmount: bigint; signature: string } | null {
+  if (!raw) return null;
+  try {
+    const j = JSON.parse(atob(raw)) as { cumulativeAmount?: string; signature?: string };
+    if (!j.signature || !/^0x[0-9a-fA-F]{130,}$/.test(j.signature) || j.cumulativeAmount === undefined) return null;
+    return { cumulativeAmount: BigInt(j.cumulativeAmount), signature: j.signature };
+  } catch {
+    return null;
+  }
+}
+
+function aiBalance() {
+  const s = state.session && state.session.status === 'open' ? state.session : null;
+  return s ? { channelId: s.channelId, depositUsd: s.depositUsd, spentUsd: s.spentUsd, remainingUsd: s.remainingUsd } : null;
+}
+
+function record(type: string, amountUsd: number, counterparty: string | null) {
+  const txHash = mockTxHash();
+  mockWallet.activity.unshift({ id: nextId('mv'), type, status: 'completed', amountUsd, chain: 'monad', token: 'USDC', counterparty, txHash, at: new Date().toISOString() });
+  return txHash;
+}
 
 
 /** Live request record: `priceUsd` + `charged` boolean, `errorCode`, `finishedAt`. */
@@ -82,7 +173,20 @@ export const handlers = [
     const g = guard();
     if (g) return g;
     const { address, ...settings } = state.user;
-    return HttpResponse.json({ id: 'user_mock', address, email: 'demo@smartrouter.dev', loginMethod: 'email', country: null, usage: usage(), settings, freeRemainingToday: Math.max(0, FREE_LIMIT - state.freeUsed) });
+    const ai = aiBalance();
+    return HttpResponse.json({
+      id: 'user_mock',
+      address,
+      email: 'demo@smartrouter.dev',
+      loginMethod: 'email',
+      country: null,
+      network: { chainId: CHAIN_ID, name: 'Monad' },
+      usage: usage(),
+      settings,
+      allocation: ai ? { channelId: ai.channelId, depositUsd: ai.depositUsd, usedUsd: ai.spentUsd, remainingUsd: ai.remainingUsd } : null,
+      spendingKey: { setupDone: mockWallet.setupDone, address: mockWallet.spendingKey, expiresAt: mockWallet.setupDone ? new Date(Date.now() + 7 * 86_400_000).toISOString() : null },
+      freeRemainingToday: Math.max(0, FREE_LIMIT - state.freeUsed),
+    });
   }),
   http.patch(url('/me/settings'), async ({ request }) => {
     const g = guard();
@@ -97,7 +201,7 @@ export const handlers = [
     if (typeof patch.weeklyLimitUsd === 'number') state.user.weeklyLimitUsd = patch.weeklyLimitUsd;
     if (typeof patch.autoFreeFallback === 'boolean') state.user.autoFreeFallback = patch.autoFreeFallback;
     const { address: _address, ...settings } = state.user;
-    return HttpResponse.json({ ...settings, country: null, spendingKeyLimitUsd: state.user.dailyLimitUsd + 1 });
+    return HttpResponse.json({ ...settings, country: null, vaultSetupNeeded: patch.dailyLimitUsd !== undefined || patch.weeklyLimitUsd !== undefined });
   }),
 
   /* -------------------------------- catalogue ------------------------------- */
@@ -196,10 +300,25 @@ export const handlers = [
     const s = state.session;
     return HttpResponse.json({
       paidRunsEnabled: true,
-      network: { chainId: 42431, token: '0x20c0000000000000000000000000000000000000', recipient: '0x00000000000000000000000000000000000000aa', operator: '0x00000000000000000000000000000000000000bb' },
+      network: { chainId: CHAIN_ID, name: 'Monad', token: contracts().usdc, vault: contracts().vault, ledger: contracts().ledger, operator: '0x61eB118FDb951cD9982a7fc6fA4132a31cF9c1a3', explorer: EXPLORER },
       suggestedDepositUsd: usage().nextDepositUsd,
       usage: usage(),
-      session: s ? { channelId: s.channelId, depositUsd: s.depositUsd, spentUsd: s.spentUsd, remainingUsd: s.remainingUsd, settledUsd: 0, requests: s.requests, openedAt: s.openedAt, lastUsedAt: s.openedAt } : null,
+      session: s
+        ? {
+            channelId: s.channelId,
+            depositUsd: s.depositUsd,
+            spentUsd: s.spentUsd,
+            remainingUsd: s.remainingUsd,
+            settledUsd: 0,
+            deliveredUsd: s.spentUsd,
+            requests: s.requests,
+            nextVoucherBaseMicro: mockWallet.voucherTotalMicro.toString(),
+            setupDone: mockWallet.setupDone,
+            signer: mockWallet.spendingKey,
+            signerExpiresAt: mockWallet.setupDone ? new Date(Date.now() + 7 * 86_400_000).toISOString() : null,
+            lastUsedAt: s.openedAt,
+          }
+        : null,
     });
   }),
 
@@ -207,45 +326,91 @@ export const handlers = [
   http.get(url('/wallet'), () => {
     const g = guard();
     if (g) return g;
-    const s = state.session && state.session.status === 'open' ? state.session : null;
-    const locked = s ? { depositUsd: s.depositUsd, spentUsd: s.spentUsd, remainingUsd: s.remainingUsd } : null;
+    const ai = aiBalance();
     return HttpResponse.json({
       address: state.user.address,
-      network: { chainId: 42431, name: 'Tempo Testnet (Moderato)' },
-      token: { address: '0x20c0000000000000000000000000000000000000', symbol: 'pathUSD', decimals: 6 },
+      network: { chainId: CHAIN_ID, name: 'Monad', explorer: EXPLORER },
+      token: { address: contracts().usdc, symbol: 'USDC', decimals: 6 },
       main: { balanceUsd: mockWallet.balanceUsd },
-      ai: locked,
-      locked,
+      ai,
+      locked: ai,
+      vault: { address: contracts().vault, ledger: contracts().ledger },
       caps: usage(),
-      spendingKey: mockWallet.spendingKey
-        ? { status: 'active', address: mockWallet.spendingKey, expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(), setup: { token: '0x20c0000000000000000000000000000000000000', limitUsd: state.user.dailyLimitUsd + 1, periodSeconds: 86_400, expiryDays: 7, scopes: [{ address: '0x4d50500000000000000000000000000000000000' }] } }
-        : { status: 'missing', setup: { token: '0x20c0000000000000000000000000000000000000', limitUsd: state.user.dailyLimitUsd + 1, periodSeconds: 86_400, expiryDays: 7, scopes: [{ address: '0x4d50500000000000000000000000000000000000' }] } },
-      incomingUsd: 0,
-      networkFees: { paidBy: 'smartrouter', sponsoredPerDay: 20, usedToday: 0, relayUrl: '/relay' },
-      features: { crossChain: false, card: false, cashOut: false, sendCode: { required: mockWallet.sendCodeRequired, sentTo: 'd•••@smartrouter.dev', ttlMinutes: 10 } },
+      spendingKey: mockWallet.setupDone
+        ? { status: 'active', address: mockWallet.spendingKey, expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(), onChainCaps: { dailyUsd: state.user.dailyLimitUsd, weeklyUsd: state.user.weeklyLimitUsd } }
+        : { status: 'missing', address: null, expiresAt: null, onChainCaps: { dailyUsd: 0, weeklyUsd: 0 } },
+      networkFees: { paidBy: 'smartrouter', sponsoredPerDay: 20, usedToday: 0 },
+      features: { crossChain: false, card: { via: 'privy', chain: 'monad', token: 'USDC' }, cashOut: false, sendCode: { required: mockWallet.sendCodeRequired, sentTo: 'd•••@smartrouter.dev', ttlMinutes: 10 } },
     });
   }),
-  http.get(url('/wallet/options'), () =>
-    HttpResponse.json({ deposit: [{ chain: 'tempo', chainId: 42431, chainName: 'Tempo Testnet (Moderato)', vmType: 'evm', token: 'pathUSD', depositAvailable: true, method: 'direct' }], send: [{ chain: 'tempo', chainId: 42431, chainName: 'Tempo Testnet (Moderato)', vmType: 'evm', token: 'pathUSD', method: 'direct' }], card: null, cashOut: null }),
-  ),
-  http.get(url('/wallet/activity'), () => guard() ?? HttpResponse.json({ items: [], nextBefore: null })),
-  http.post(url('/wallet/deposit-address'), () => guard() ?? HttpResponse.json({ chain: 'tempo', token: 'pathUSD', address: state.user.address, method: 'direct' })),
-  http.post(url('/wallet/spending-key'), async ({ request }) => {
+  http.get(url('/wallet/options'), () => {
+    const monad = { chain: 'monad', chainId: CHAIN_ID, chainName: 'Monad', vmType: 'evm', token: 'USDC', tokenAddress: contracts().usdc, decimals: 6 };
+    return HttpResponse.json({
+      deposit: [{ ...monad, depositAvailable: true, method: 'direct', note: 'Send USDC on Monad to your wallet address, then move it to your AI balance with one signature.' }],
+      send: [{ ...monad, method: 'direct' }],
+      card: { via: 'privy', chain: 'monad', chainId: CHAIN_ID, token: 'USDC', tokenAddress: contracts().usdc, note: 'Buy USDC on Monad with a card (Privy funding); it lands in your wallet.' },
+      aurora: null,
+      cashOut: null,
+    });
+  }),
+  http.get(url('/wallet/activity'), () => guard() ?? HttpResponse.json({ items: mockWallet.activity.map((a) => ({ ...a, deliveredUsd: a.amountUsd, explorerUrl: a.txHash ? `${EXPLORER}/tx/${a.txHash}` : null })), nextBefore: null, indexer: null })),
+
+  http.get(url('/wallet/setup'), ({ request }) => {
     const g = guard();
     if (g) return g;
-    const { accessKeyAddress } = await body<{ accessKeyAddress?: string }>(request);
-    mockWallet.spendingKey = accessKeyAddress ?? null;
-    return HttpResponse.json({ status: 'active', address: accessKeyAddress, expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString() });
+    const q = new URL(request.url).searchParams;
+    const daily = q.get('dailyUsd');
+    const weekly = q.get('weeklyUsd');
+    return HttpResponse.json(setupTyped(q.get('signer'), daily ? Number(daily) : undefined, weekly ? Number(weekly) : undefined));
   }),
+  http.post(url('/wallet/setup'), async ({ request }) => {
+    const g = guard();
+    if (g) return g;
+    const b = await body<{ signer?: string; dailyCap?: string; weeklyCap?: string; signature?: string }>(request);
+    if (!b.signer || !b.signature || !b.dailyCap || !b.weeklyCap) return error(400, 'VALIDATION_FAILED', 'Send { ...message, signature }');
+    if (BigInt(b.dailyCap) <= 0n || BigInt(b.weeklyCap) < BigInt(b.dailyCap)) return error(400, 'VALIDATION_FAILED', 'Caps: daily must be above 0 and not above weekly');
+    mockWallet.setupDone = true;
+    mockWallet.spendingKey = b.signer.toLowerCase();
+    const txHash = mockTxHash();
+    return HttpResponse.json({ ok: true, txHash, explorerUrl: `${EXPLORER}/tx/${txHash}` });
+  }),
+
+  http.post(url('/wallet/deposit/authorization'), async ({ request }) => {
+    const g = guard();
+    if (g) return g;
+    const { amountUsd } = await body<{ amountUsd?: number }>(request);
+    if (!amountUsd || amountUsd <= 0) return error(400, 'VALIDATION_FAILED', 'amountUsd must be positive');
+    if (amountUsd > mockWallet.balanceUsd) return error(400, 'VALIDATION_FAILED', `Not enough USDC in your wallet ($${mockWallet.balanceUsd.toFixed(2)})`);
+    return HttpResponse.json({
+      domain: usdcDomain(),
+      types: ERC3009('ReceiveWithAuthorization'),
+      primaryType: 'ReceiveWithAuthorization',
+      message: { from: state.user.address, to: contracts().vault, value: micro(amountUsd).toString(), validAfter: '0', validBefore: String(Math.floor(Date.now() / 1000) + 3600), nonce: nonce32() },
+      submit: 'POST /wallet/deposit { ...message, signature }',
+    });
+  }),
+  http.post(url('/wallet/deposit'), async ({ request }) => {
+    const g = guard();
+    if (g) return g;
+    const b = await body<{ value?: string; signature?: string; nonce?: string }>(request);
+    if (!b.value || !b.signature || !b.nonce) return error(400, 'VALIDATION_FAILED', 'Send { ...message, signature }');
+    const usd = Number(b.value) / 1e6;
+    if (usd > mockWallet.balanceUsd) return error(400, 'VALIDATION_FAILED', `Not enough USDC in your wallet ($${mockWallet.balanceUsd.toFixed(2)})`);
+    mockWallet.balanceUsd = Math.round((mockWallet.balanceUsd - usd) * 1e6) / 1e6;
+    const s = depositToAi(usd);
+    const txHash = record('to_ai_balance', usd, contracts().vault);
+    return HttpResponse.json({ ok: true, txHash, explorerUrl: `${EXPLORER}/tx/${txHash}`, ai: { depositUsd: s.depositUsd, remainingUsd: s.remainingUsd } });
+  }),
+
   http.post(url('/wallet/locked/return'), () => {
     const g = guard();
     if (g) return g;
     const s = state.session;
     const returned = s ? s.remainingUsd : 0;
-    if (s) s.status = 'closed';
     state.session = null;
     mockWallet.balanceUsd = Math.round((mockWallet.balanceUsd + returned) * 1e6) / 1e6;
-    return HttpResponse.json({ returnedUsd: returned, skipped: [] });
+    const txHash = returned > 0 ? record('from_ai_balance', returned, contracts().vault) : null;
+    return HttpResponse.json({ returnedUsd: returned, settledUsd: s?.spentUsd ?? 0, txHash, skipped: [] });
   }),
   http.post(url('/wallet/send/quote'), async ({ request }) => {
     const { amountUsd } = await body<{ amountUsd?: number }>(request);
@@ -253,30 +418,53 @@ export const handlers = [
   }),
   http.post(url('/wallet/send/code'), async ({ request }) => {
     const b = await body<{ chain?: string; token?: string; to?: string; amountUsd?: number }>(request);
-    if ((b.amountUsd ?? 0) > mockWallet.balanceUsd) return error(400, 'VALIDATION_FAILED', `Not enough in your main wallet ($${mockWallet.balanceUsd.toFixed(2)})`);
+    if ((b.amountUsd ?? 0) > mockWallet.balanceUsd) return error(400, 'VALIDATION_FAILED', `Not enough in your wallet ($${mockWallet.balanceUsd.toFixed(2)})`);
     // A new code cancels the old one.
     mockWallet.sendCode = { id: crypto.randomUUID(), body: JSON.stringify([b.chain, b.token, b.to?.toLowerCase(), b.amountUsd]), attemptsLeft: 5, used: false };
     return HttpResponse.json({ verificationId: mockWallet.sendCode.id, sentTo: 'd•••@smartrouter.dev', expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), attemptsAllowed: 5, devCode: MOCK_SEND_CODE });
   }),
   http.post(url('/wallet/send'), async ({ request }) => {
     const { amountUsd, verificationId, code, chain, token, to } = await body<{ amountUsd?: number; verificationId?: string; code?: string; chain?: string; token?: string; to?: string }>(request);
+    if (chain !== undefined && chain !== 'monad') return error(400, 'VALIDATION_FAILED', 'Only Monad USDC can be sent');
+    if (!to || !/^0x[0-9a-fA-F]{40}$/.test(to)) return error(400, 'VALIDATION_FAILED', 'Enter a valid Monad address (0x…)');
     const c = mockWallet.sendCode;
     if (mockWallet.sendCodeRequired) {
-      if (!verificationId || !code) return error(400, 'VALIDATION_FAILED', 'Enter the 6-digit code');
+      if (!verificationId || !code) return error(400, 'VALIDATION_FAILED', 'Enter the 6-digit code we emailed you');
       if (!c || c.id !== verificationId || c.used || c.attemptsLeft <= 0) return error(410, 'SEND_CODE_EXPIRED', 'This code has expired or was already used; request a new one');
-      if (c.body !== JSON.stringify([chain, token, to?.toLowerCase(), amountUsd])) return error(410, 'SEND_CODE_EXPIRED', 'This code was for a different amount or recipient; request a new one');
+      if (c.body !== JSON.stringify([chain, token, to.toLowerCase(), amountUsd])) return error(410, 'SEND_CODE_EXPIRED', 'This code was for a different amount or recipient; request a new one');
       if (code.trim() !== MOCK_SEND_CODE) {
         c.attemptsLeft -= 1;
         if (c.attemptsLeft <= 0) return error(410, 'SEND_CODE_EXPIRED', 'Too many wrong codes; request a new one');
         return error(400, 'SEND_CODE_INVALID', `Wrong code — ${String(c.attemptsLeft)} ${c.attemptsLeft === 1 ? 'try' : 'tries'} left`, { attemptsLeft: c.attemptsLeft });
       }
     }
-    if ((amountUsd ?? 0) > mockWallet.balanceUsd) return error(400, 'VALIDATION_FAILED', `Not enough in your main wallet ($${mockWallet.balanceUsd.toFixed(2)})`);
+    if ((amountUsd ?? 0) > mockWallet.balanceUsd) return error(400, 'VALIDATION_FAILED', `Not enough in your wallet ($${mockWallet.balanceUsd.toFixed(2)})`);
     if (c) c.used = true;
-    mockWallet.balanceUsd = Math.round((mockWallet.balanceUsd - (amountUsd ?? 0)) * 1e6) / 1e6;
-    return HttpResponse.json({ sendId: nextId('send'), chainId: 42431, calls: [], feePayer: true });
+    const sendId = crypto.randomUUID();
+    mockWallet.sends.set(sendId, { to: to.toLowerCase(), amountUsd: amountUsd ?? 0 });
+    const message = { from: state.user.address, to: to.toLowerCase(), value: micro(amountUsd ?? 0).toString(), validAfter: '0', validBefore: String(Math.floor(Date.now() / 1000) + 1800), nonce: nonce32() };
+    return HttpResponse.json({
+      sendId,
+      chainId: CHAIN_ID,
+      typedData: { domain: usdcDomain(), types: ERC3009('TransferWithAuthorization'), primaryType: 'TransferWithAuthorization', message },
+      submit: `POST /wallet/send/${sendId}/sign { signature }`,
+      sendUsd: amountUsd ?? 0,
+      receiveUsd: amountUsd ?? 0,
+      networkFeeUsd: 0,
+    });
   }),
-  http.post(url('/wallet/send/:id/submitted'), ({ params }) => HttpResponse.json({ sendId: String(params.id), status: 'completed' })),
+  http.post(url('/wallet/send/:id/sign'), async ({ params, request }) => {
+    const g = guard();
+    if (g) return g;
+    const pending = mockWallet.sends.get(String(params.id));
+    const { signature } = await body<{ signature?: string }>(request);
+    if (!pending) return error(404, 'NOT_FOUND', 'Send not found or already submitted');
+    if (!signature) return error(400, 'VALIDATION_FAILED', 'Send { signature }');
+    mockWallet.sends.delete(String(params.id));
+    mockWallet.balanceUsd = Math.round((mockWallet.balanceUsd - pending.amountUsd) * 1e6) / 1e6;
+    const txHash = record('send', pending.amountUsd, pending.to);
+    return HttpResponse.json({ sendId: String(params.id), status: 'completed', txHash, explorerUrl: `${EXPLORER}/tx/${txHash}` });
+  }),
 
   /* --------------------------------- requests ------------------------------- */
   http.get(url('/requests'), () => {
@@ -297,10 +485,10 @@ export const handlers = [
   http.post(url('/feedback'), async ({ request }) => {
     const g = guard();
     if (g) return g;
-    const { requestId, rating } = await body<{ requestId?: string; rating?: number }>(request);
+    const { requestId, rating, signature } = await body<{ requestId?: string; rating?: number; signature?: string }>(request);
     if (!requestId || (rating !== 1 && rating !== -1)) return error(400, 'VALIDATION_FAILED', 'requestId and rating (1 | -1) are required');
     state.feedback.push({ requestId, rating });
-    return new HttpResponse(null, { status: 204 });
+    return HttpResponse.json({ ok: true, onChain: Boolean(signature) });
   }),
   http.post(url('/compare/vote'), async ({ request }) => {
     const g = guard();
@@ -379,11 +567,28 @@ export const handlers = [
       if (weeklySpentUsd() + quote.priceUsd > state.user.weeklyLimitUsd) {
         return error(403, 'SPENDING_CAP_REACHED', "You've reached this week's spending cap. Raise it in settings or continue free.", { reason: 'weekly_limit', freeFallback: fallback });
       }
-      if (!state.session || state.session.status === 'closed') openSession(Math.max(0.01, usage().nextDepositUsd));
-      const s = state.session;
-      if (s && s.remainingUsd < quote.priceUsd) {
-        return error(402, 'ALLOCATION_EXHAUSTED', 'Your allocation is used up', { freeFallback: { available: state.freeUsed < FREE_LIMIT, remaining: Math.max(0, FREE_LIMIT - state.freeUsed), modelId: FREE_MODEL_ID } });
+      if (!mockWallet.setupDone) return error(409, 'SETUP_REQUIRED', 'Set up your spending key and caps first (one signature).', { setup: setupTyped(null) });
+      const s = state.session && state.session.status === 'open' ? state.session : null;
+      const remaining = s?.remainingUsd ?? 0;
+      if (remaining < quote.priceUsd) {
+        return error(402, 'ALLOCATION_EXHAUSTED', 'Your AI balance is too low for this answer. Top up, or continue on the free model.', {
+          priceUsd: quote.priceUsd,
+          remainingUsd: remaining,
+          shortfallUsd: Math.round((quote.priceUsd - remaining) * 1e6) / 1e6,
+          suggestedDepositUsd: usage().nextDepositUsd,
+          freeFallback: { available: state.freeUsed < FREE_LIMIT, remaining: Math.max(0, FREE_LIMIT - state.freeUsed), modelId: FREE_MODEL_ID },
+        });
       }
+      const voucher = readVoucher(request.headers.get('x-smartrouter-voucher'));
+      const expected = mockWallet.voucherTotalMicro + micro(quote.priceUsd);
+      if (!voucher || voucher.cumulativeAmount !== expected) {
+        return error(402, 'PAYMENT_REQUIRED', voucher ? `Voucher rejected: expected cumulativeAmount ${expected.toString()}. Sign the voucher in details and retry.` : 'Sign the voucher in details with your spending key and retry with the X-SmartRouter-Voucher header.', {
+          priceUsd: quote.priceUsd,
+          remainingUsd: remaining,
+          voucher: voucherTyped(quote.priceUsd),
+        });
+      }
+      mockWallet.voucherTotalMicro = expected;
     }
 
     quote.used = true;
