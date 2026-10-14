@@ -4,44 +4,17 @@
  *
  *   Voucher   — "SmartRouter may take up to `cumulativeAmount` in total" (spending key, per answer)
  *   Setup     — registers the spending key and the daily/weekly caps (Privy wallet, once)
- *   Rating    — thumbs up/down on an answer (spending key)
- *   Vote      — Compare winner (spending key)
  *   ReceiveWithAuthorization / TransferWithAuthorization — gasless USDC (Privy wallet, ERC-3009)
  *
  * The API sends integers as decimal strings. They are kept as strings everywhere except the signing
  * call itself, where `toSignable` turns uint/int fields into `bigint` (Monad handoff §5.3).
  */
-import type { Hex } from 'viem';
 
 import type { TypedData } from '@/lib/api/types';
 
 import { getContracts, sameAddress } from './contracts';
 
 export const VOUCHER_HEADER = 'X-SmartRouter-Voucher';
-
-export const ledgerDomain = (chainId: number, ledger: string) => ({ name: 'SmartRouterLedger', version: '1', chainId, verifyingContract: ledger as Hex }) as const;
-
-export const RATING_TYPES = {
-  Rating: [
-    { name: 'requestId', type: 'bytes16' },
-    { name: 'score', type: 'int8' },
-  ],
-} as const;
-
-export const VOTE_TYPES = {
-  Vote: [
-    { name: 'compareGroup', type: 'bytes16' },
-    { name: 'winnerRequestId', type: 'bytes16' },
-    { name: 'loserRequestId', type: 'bytes16' },
-  ],
-} as const;
-
-/** A request / compare-group UUID as `bytes16` (0x + 32 hex chars, no dashes). */
-export function uuidToBytes16(uuid: string): Hex {
-  const hex = uuid.replace(/-/g, '').toLowerCase();
-  if (!/^[0-9a-f]{32}$/.test(hex)) throw new Error(`Not a UUID: ${uuid}`);
-  return `0x${hex}`;
-}
 
 /** Decimal-string integers → `bigint` for the fields the types declare as uint/int. */
 export function toSignable(typed: TypedData): Record<string, unknown> {
