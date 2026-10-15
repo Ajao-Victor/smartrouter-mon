@@ -1,7 +1,7 @@
 import { ApiError } from '@/lib/api/client';
 import { clearSessionToken, getSessionToken } from '@/lib/auth/session';
 
-import { exchangeIdentityToken, isWalletNotReady, isWrongAccount, signOutEverywhere } from '../signIn';
+import { exchangeIdentityToken, isWalletNotReady, isWalletSettingUp, isWrongAccount, signOutEverywhere, WALLET_RETRY_ATTEMPTS, WALLET_RETRY_MS, WalletSetupError } from '../signIn';
 
 const privy = vi.fn();
 const logout = vi.fn();
@@ -39,6 +39,31 @@ describe('Privy sign-in (Handover "Sign-in flow")', () => {
     await expect(p).resolves.toMatchObject({ token: 'u1.999.sig' });
     expect(privy).toHaveBeenNthCalledWith(2, { identityToken: 'fresh' });
     expect(isWalletNotReady(notReady)).toBe(true);
+  });
+
+  it('waits for the identity token and the wallet, telling the caller once', async () => {
+    const notReady = new ApiError({ status: 400, code: 'VALIDATION_FAILED', message: 'No Privy embedded wallet yet' });
+    privy.mockRejectedValueOnce(notReady).mockRejectedValueOnce(notReady).mockResolvedValueOnce(ok);
+    const tokens = [null, 'a', 'b', 'c'];
+    const onWaiting = vi.fn();
+    const p = exchangeIdentityToken(() => Promise.resolve(tokens.shift() ?? null), onWaiting);
+    await vi.advanceTimersByTimeAsync(3 * WALLET_RETRY_MS);
+    await expect(p).resolves.toMatchObject({ token: 'u1.999.sig' });
+    expect(onWaiting).toHaveBeenCalledTimes(1);
+    expect(privy).toHaveBeenLastCalledWith({ identityToken: 'c' });
+  });
+
+  it('a wallet still provisioning after every retry is a setup wait, not a sign-in failure', async () => {
+    const notReady = new ApiError({ status: 400, code: 'VALIDATION_FAILED', message: 'No Privy embedded wallet yet' });
+    privy.mockRejectedValue(notReady);
+    const p = exchangeIdentityToken(() => Promise.resolve('t'));
+    const settled = expect(p).rejects.toBeInstanceOf(WalletSetupError);
+    await vi.advanceTimersByTimeAsync(WALLET_RETRY_ATTEMPTS * WALLET_RETRY_MS);
+    await settled;
+    expect(privy).toHaveBeenCalledTimes(WALLET_RETRY_ATTEMPTS);
+    expect(isWalletSettingUp(new WalletSetupError())).toBe(true);
+    expect(isWalletSettingUp(notReady)).toBe(true);
+    expect(getSessionToken()).toBeNull();
   });
 
   it('403 "This wallet belongs to another account" is not retried', async () => {
