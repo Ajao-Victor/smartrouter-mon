@@ -11,7 +11,7 @@ import { apiUnreachableHint } from '@/lib/api/errors';
 import { queryKeys } from '@/lib/api/keys';
 import type { PrivySignIn } from '@/lib/api/types';
 import { clearSessionToken, getSessionToken, registerAuthBridge, subscribeSessionToken } from '@/lib/auth/session';
-import { exchangeIdentityToken, isWrongAccount } from '@/lib/auth/signIn';
+import { exchangeIdentityToken, isWalletSettingUp, isWrongAccount } from '@/lib/auth/signIn';
 import { env } from '@/lib/env';
 import { chain } from '@/lib/monad/chain';
 import { sameAddress } from '@/lib/monad/contracts';
@@ -39,7 +39,17 @@ function onSignedIn(res: PrivySignIn, qc: QueryClient): void {
   useAuthStore.getState().takeAfterSignIn()?.();
 }
 
+const WALLET_SETUP_TITLE = 'Setting up your wallet…';
+
 function onSignInFailed(err: unknown): void {
+  if (isWalletSettingUp(err)) {
+    // Privy signed in but the embedded wallet is still provisioning: not a failure. Keep the
+    // pending callback so the next attempt still sends the kept message / redirects.
+    console.warn('[SmartRouter] embedded wallet still provisioning', err);
+    useAuthStore.getState().setStatus('signed_out');
+    toast.info(WALLET_SETUP_TITLE, err instanceof Error ? err.message : undefined);
+    return;
+  }
   clearSessionToken();
   useAuthStore.getState().signedOut();
   console.error('[SmartRouter] sign-in failed', err);
@@ -63,9 +73,10 @@ function useTokenStatus(): void {
 /**
  * Inside `PrivyProvider`: turns Privy's authenticated state into a SmartRouter session (Monad
  * handoff §3–4) and exposes the modal, logout and the embedded wallet to the rest of the app,
- * which never imports Privy directly. Nothing is exchanged until Privy **and** its wallet list are
- * ready; the identity token (not the access token) goes to `POST /auth/privy`, with an in-flight
- * guard against React Strict Mode double effects.
+ * which never imports Privy directly. Nothing is exchanged until Privy is authenticated, holds an
+ * identity token **and** has a Privy embedded Ethereum wallet (on a first sign-in the wallet is
+ * still being created after `onComplete`); the identity token (not the access token) goes to
+ * `POST /auth/privy`, with an in-flight guard against React Strict Mode double effects.
  */
 function PrivyBridge() {
   const qc = useQueryClient();
@@ -85,27 +96,44 @@ function PrivyBridge() {
   authenticatedRef.current = authenticated;
   const walletsRef = useRef(wallets);
   walletsRef.current = wallets;
-  const walletsReadyRef = useRef(walletsReady);
-  walletsReadyRef.current = walletsReady;
+  const hasEmbeddedWallet = walletsReady && wallets.some((w) => w.walletClientType === 'privy');
+  const canExchange = ready && authenticated && Boolean(identityToken) && hasEmbeddedWallet;
+  const canExchangeRef = useRef(canExchange);
+  canExchangeRef.current = canExchange;
   const busy = useRef(false);
-  /** Login finished before the wallet list was ready: exchange once it is. */
+  /** Login finished before the identity token or embedded wallet existed: exchange once they do. */
   const pending = useRef(false);
+  /** "Setting up your wallet…" shown for this sign-in (once). */
+  const notified = useRef(false);
+
+  const waitForWallet = useCallback(() => {
+    pending.current = true;
+    useAuthStore.getState().setStatus('signing_in');
+    if (!notified.current) {
+      notified.current = true;
+      toast.info(WALLET_SETUP_TITLE);
+    }
+  }, []);
 
   /** Steps 2–5: identity token → `POST /auth/privy` → keep the session token. */
   const exchange = useCallback(async () => {
     if (busy.current) return;
     busy.current = true;
     useAuthStore.getState().setStatus('signing_in');
-    let attempt = 0;
     try {
-      const res = await exchangeIdentityToken(async () => {
-        attempt += 1;
-        if (attempt > 1) {
-          // Wallet still being created: refresh the user so the next identity token carries it.
+      const res = await exchangeIdentityToken(
+        async () => {
+          // The wallet may have just been created: refresh the user so the identity token carries it.
           await refreshUser().catch(() => undefined);
-        }
-        return (await getIdentityToken()) ?? identityRef.current;
-      });
+          return (await getIdentityToken()) ?? identityRef.current;
+        },
+        () => {
+          if (!notified.current) {
+            notified.current = true;
+            toast.info(WALLET_SETUP_TITLE);
+          }
+        },
+      );
       // §3: signatures must come from the embedded wallet whose address the backend returned.
       if (!walletsRef.current.some((w) => w.walletClientType === 'privy' && sameAddress(w.address, res.address))) {
         console.warn('[SmartRouter] no Privy embedded wallet matches the SmartRouter address yet', res.address);
@@ -126,6 +154,7 @@ function PrivyBridge() {
       }
     } finally {
       busy.current = false;
+      notified.current = false;
     }
   }, [logout, qc, refreshUser]);
 
@@ -139,8 +168,8 @@ function PrivyBridge() {
   const { login } = useLogin({
     onComplete: ({ wasAlreadyAuthenticated }) => {
       if (wasAlreadyAuthenticated && getSessionToken()) return;
-      if (walletsReadyRef.current) void exchange();
-      else pending.current = true;
+      if (canExchangeRef.current) void exchange();
+      else waitForWallet();
     },
     onError: (code) => {
       useAuthStore.getState().setAfterSignIn(null);
@@ -152,21 +181,21 @@ function PrivyBridge() {
   });
 
   // Privy says signed in but we hold no SmartRouter token (first load after login, a login that
-  // finished before the wallets were ready, or a 401 that dropped it): exchange silently.
+  // finished before the embedded wallet existed, or a 401 that dropped it): exchange silently.
   useEffect(() => {
-    if (!ready || !walletsReady || !authenticated) return;
+    if (!canExchange) return;
     if (pending.current || !getSessionToken()) {
       pending.current = false;
       void exchange();
     }
-  }, [ready, walletsReady, authenticated, exchange]);
+  }, [canExchange, exchange]);
 
   useEffect(() => {
     registerAuthBridge({
       openSignIn: () => {
         if (!authenticatedRef.current) login();
-        else if (walletsReadyRef.current) void exchange();
-        else pending.current = true;
+        else if (canExchangeRef.current) void exchange();
+        else waitForWallet();
       },
       logoutPrivy: () => logout(),
       fundWallet: async ({ address, amountUsd }) => {
@@ -179,7 +208,7 @@ function PrivyBridge() {
       registerAuthBridge(null);
       registerPrivyWallets(null);
     };
-  }, [exchange, login, logout, fundWallet, linkEmail]);
+  }, [exchange, login, logout, fundWallet, linkEmail, waitForWallet]);
 
   return null;
 }
